@@ -290,6 +290,23 @@ async def demo():
   <pre id="pre-report"></pre>
 </div>
 
+<!-- Step 4: Run Deep Audit -->
+<div class="card">
+  <h2>Step 4 — Run Deep Machine Learning Audit</h2>
+  <p class="desc">
+    Runs the advanced <code>/api/audit/full</code> including AIF360 parity metrics, SHAP feature importance, and Proxy variable detection.
+  </p>
+  <div class="row">
+    <div>
+      <label for="full-audit-file-id">file_id</label>
+      <input type="text" id="full-audit-file-id" placeholder="paste file_id here" />
+    </div>
+    <button id="btn-full-audit" onclick="runFullAudit()">Run Deep Audit</button>
+  </div>
+  <div class="status" id="status-full-audit"></div>
+  <pre id="pre-full-audit"></pre>
+</div>
+
 <footer>
   <a href="/docs" target="_blank">Swagger UI</a> &nbsp;·&nbsp;
   <a href="/redoc" target="_blank">ReDoc</a> &nbsp;·&nbsp;
@@ -322,10 +339,11 @@ async def demo():
       const data = await res.json();
       showResult('pre-generate', 'status-generate', data, res.ok);
 
-      // Auto-fill Step 2 & 3 file_id fields
+      // Auto-fill Step 2, 3 & 4 file_id fields
       if (res.ok && data.file_id) {
         document.getElementById('audit-file-id').value  = data.file_id;
         document.getElementById('report-file-id').value = data.file_id;
+        document.getElementById('full-audit-file-id').value = data.file_id;
       }
     } catch (e) {
       showResult('pre-generate', 'status-generate', { error: e.message }, false);
@@ -382,6 +400,33 @@ async def demo():
     } finally {
       document.getElementById('btn-report').disabled    = false;
       document.getElementById('btn-report').textContent = 'View Report';
+    }
+  }
+
+  // ── Step 4: Run Full Audit ───────────────────────────────────────────────────
+  async function runFullAudit() {
+    const fileId = document.getElementById('full-audit-file-id').value.trim();
+    if (!fileId) { alert('Please enter a file_id first.'); return; }
+
+    setLoading('btn-full-audit', true);
+    try {
+      const res  = await fetch('/api/audit/full', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          file_id: fileId,
+          target_column: 'hired',
+          sensitive_columns: ['gender'],
+          positive_label: 1,
+        }),
+      });
+      const data = await res.json();
+      showResult('pre-full-audit', 'status-full-audit', data, res.ok);
+    } catch (e) {
+      showResult('pre-full-audit', 'status-full-audit', { error: e.message }, false);
+    } finally {
+      document.getElementById('btn-full-audit').disabled    = false;
+      document.getElementById('btn-full-audit').textContent = 'Run Deep Audit';
     }
   }
 </script>

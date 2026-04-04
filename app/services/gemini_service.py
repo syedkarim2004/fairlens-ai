@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 # Public API
 # ---------------------------------------------------------------------------
 
-def get_bias_explanation(audit_results: Dict[str, Any]) -> str:
+def get_bias_explanation(audit_results: Dict[str, Any], fairness_grade: Dict[str, Any] = None, industry_context: str = "general", legal_framework: str = "General algorithmic fairness principles") -> str:
     """
     Generate a plain-English bias explanation using Groq llama-3.3-70b-versatile.
 
@@ -45,6 +45,9 @@ def get_bias_explanation(audit_results: Dict[str, Any]) -> str:
 
     Args:
         audit_results: The dict returned by fairness_engine.run_full_audit().
+        fairness_grade: Fairness grade dict
+        industry_context: Detected industry
+        legal_framework: Applicable legal framework
 
     Returns:
         A plain-English explanation string from Groq, or a fallback message
@@ -65,13 +68,13 @@ def get_bias_explanation(audit_results: Dict[str, Any]) -> str:
         from groq import Groq
 
         client = Groq(api_key=api_key)
-        prompt = _build_prompt(audit_results)
+        prompt = _build_prompt(audit_results, fairness_grade, industry_context, legal_framework)
 
         print(f"[gemini_service] Calling Groq API with model=llama-3.3-70b-versatile ...")
         response = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=500
+            max_tokens=600
         )
         
         content = response.choices[0].message.content
@@ -96,12 +99,15 @@ def get_bias_explanation(audit_results: Dict[str, Any]) -> str:
 # Internal Helpers
 # ---------------------------------------------------------------------------
 
-def _build_prompt(audit_results: Dict[str, Any]) -> str:
+def _build_prompt(audit_results: Dict[str, Any], fairness_grade: Dict[str, Any] = None, industry_context: str = "general", legal_framework: str = "General algorithmic fairness principles") -> str:
     """
     Build a structured prompt from audit results for the Groq API.
     """
     columns_summary = []
     for col, metrics in audit_results.items():
+        if isinstance(metrics, dict) and 'status' in metrics and metrics['status'] == 'error':
+            continue
+            
         columns_summary.append(
             f"""
 Attribute: {col}
@@ -115,18 +121,31 @@ Attribute: {col}
         )
 
     columns_text = "\n".join(columns_summary)
+    
+    grade_text = ""
+    if fairness_grade:
+        grade_text = f"""
+FAIRNESS GRADE:
+Overall Score: {fairness_grade.get('overall_score', 'N/A')}
+Grade: {fairness_grade.get('grade', 'N/A')}
+Description: {fairness_grade.get('grade_description', 'N/A')}
+"""
 
     prompt = f"""You are a fairness and responsible AI expert. Analyze the following algorithmic bias audit results and provide a clear, actionable, plain-English explanation suitable for a non-technical business audience.
 
+INDUSTRY CONTEXT: {industry_context.upper()}
+LEGAL FRAMEWORK: {legal_framework}
+{grade_text}
 AUDIT RESULTS:
 {columns_text}
 
 Your response should:
 1. Briefly explain what Disparate Impact Ratio and Statistical Parity Difference mean in plain English (1–2 sentences each).
-2. For each attribute, describe whether bias was detected, how severe it is, and what it means in practice.
-3. Provide 2–3 concrete, actionable recommendations to reduce the detected bias.
-4. Use a professional but approachable tone — avoid jargon where possible.
-5. Keep the total response under 400 words.
+2. For each attribute, describe whether bias was detected, how severe it is, and what it means in practice context of the {industry_context} industry.
+3. Provide 2–3 concrete, actionable recommendations to reduce the detected bias, ensuring they adhere to the {legal_framework}.
+4. Refer to the Overall Fairness Grade in your summary.
+5. Use a professional but approachable tone — avoid jargon where possible.
+6. Keep the total response under 400 words.
 
 Provide the explanation below:"""
 

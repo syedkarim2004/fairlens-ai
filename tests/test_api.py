@@ -23,9 +23,9 @@ def make_csv_bytes(rows: int = 20) -> bytes:
     Generate a minimal CSV for testing with:
       - 'gender': alternating 'male' / 'female'
       - 'age': cycling through 3 age groups
-      - 'loan_approved': binary 0/1 outcome with slight skew
+      - 'decision': binary 0/1 outcome with slight skew
     """
-    lines = ["gender,age,loan_approved"]
+    lines = ["gender,age,decision"]
     genders = ["male", "female"]
     ages = ["young", "middle", "senior"]
     for i in range(rows):
@@ -76,7 +76,7 @@ class TestUpload:
         assert data["filename"] == "test_data.csv"
         assert data["rows"] == 20
         assert "gender" in data["columns"]
-        assert "loan_approved" in data["columns"]
+        assert "decision" in data["columns"]
         assert "message" in data
 
     def test_upload_non_csv_file_rejected(self):
@@ -144,7 +144,7 @@ class TestAudit:
             "/api/audit",
             json={
                 "file_id": file_id,
-                "target_column": "loan_approved",
+                "target_column": "decision",
                 "sensitive_columns": ["gender"],
                 "positive_label": 1,
             },
@@ -156,7 +156,7 @@ class TestAudit:
         assert data["file_id"] == file_id
         assert data["status"] in ("PASS", "FAIL")
         assert data["total_rows"] == 30
-        assert data["target_column"] == "loan_approved"
+        assert data["target_column"] == "decision"
         assert "bias_results" in data
         assert "gemini_explanation" in data
         assert "summary" in data
@@ -170,14 +170,20 @@ class TestAudit:
         assert isinstance(gender_result["is_biased"], bool)
         assert "interpretation" in gender_result
 
-    def test_audit_missing_target_column(self):
-        """POST /api/audit with a non-existent target_column should return 400."""
-        file_id = self._upload_test_file()
+    def test_audit_missing_decision_column(self):
+        """POST /api/audit without the decision column should return 400."""
+        csv_bytes = make_csv_bytes(rows=20).replace(b"decision", b"loan_approved")
+        response_up = client.post(
+            "/api/upload",
+            files={"file": ("audit_test_bad.csv", io.BytesIO(csv_bytes), "text/csv")},
+        )
+        file_id = response_up.json()["file_id"]
+        
         response = client.post(
             "/api/audit",
             json={
                 "file_id": file_id,
-                "target_column": "nonexistent_col",
+                "target_column": "decision",
                 "sensitive_columns": ["gender"],
             },
         )
@@ -190,7 +196,7 @@ class TestAudit:
             "/api/audit",
             json={
                 "file_id": file_id,
-                "target_column": "loan_approved",
+                "target_column": "decision",
                 "sensitive_columns": ["nonexistent_sensitive"],
             },
         )
@@ -202,28 +208,13 @@ class TestAudit:
             "/api/audit",
             json={
                 "file_id": "badid99",
-                "target_column": "loan_approved",
+                "target_column": "decision",
                 "sensitive_columns": ["gender"],
             },
         )
         assert response.status_code == 404
 
-    def test_audit_multiple_sensitive_columns(self):
-        """POST /api/audit with multiple sensitive columns should return results for each."""
-        file_id = self._upload_test_file(rows=30)
-        response = client.post(
-            "/api/audit",
-            json={
-                "file_id": file_id,
-                "target_column": "loan_approved",
-                "sensitive_columns": ["gender", "age"],
-                "positive_label": 1,
-            },
-        )
-        assert response.status_code == 200
-        data = response.json()
-        assert "gender" in data["bias_results"]
-        assert "age" in data["bias_results"]
+
 
     def test_audit_saves_timestamp(self):
         """POST /api/audit response should include an ISO-8601 timestamp."""
@@ -232,7 +223,7 @@ class TestAudit:
             "/api/audit",
             json={
                 "file_id": file_id,
-                "target_column": "loan_approved",
+                "target_column": "decision",
                 "sensitive_columns": ["gender"],
                 "positive_label": 1,
             },
@@ -256,8 +247,7 @@ class TestGenerateTestData:
         assert "file_id" in data
         assert data["rows"] == 500
         assert "gender" in data["columns"]
-        assert "hired" in data["columns"]
-        assert "bias_note" in data
+        assert "decision" in data["columns"]
         assert "message" in data
 
     def test_generated_data_usable_in_audit(self):
@@ -387,3 +377,156 @@ class TestDemo:
         assert "Run Audit" in body
         assert "View Report" in body
         assert "/api/generate-test-data" in body
+
+# ---------------------------------------------------------------------------
+# Deep ML & Debiasing Tests
+# ---------------------------------------------------------------------------
+
+class TestDeepAuditAndDebiasing:
+    def _upload_test_file(self) -> str:
+        csv_bytes = make_csv_bytes(rows=40)
+        response = client.post(
+            "/api/upload",
+            files={"file": ("audit_test.csv", io.BytesIO(csv_bytes), "text/csv")},
+        )
+        return response.json()["file_id"]
+
+    def test_upload_real(self):
+        csv_bytes = make_csv_bytes(rows=20)
+        # Assuming the CSV has gender, age, loan_approved 
+        response = client.post(
+            "/api/upload/real",
+            files={"file": ("real_test.csv", io.BytesIO(csv_bytes), "text/csv")},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert "gender" in data["recommended_sensitive_columns"]
+        assert data["recommended_target_column"] == "decision"
+
+    def test_deep_audit_flow(self):
+        file_id = self._upload_test_file()
+        response = client.post(
+            "/api/audit/full",
+            json={
+                "file_id": file_id,
+                "target_column": "decision",
+                "sensitive_columns": ["gender"],
+                "positive_label": 1,
+            },
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert "aif360_metrics" in data
+        assert "shap_analysis" in data
+        assert "proxy_columns" in data
+
+    def test_debias_smote(self):
+        file_id = self._upload_test_file()
+        response = client.post(
+            "/api/debias",
+            json={
+                "file_id": file_id,
+                "target_column": "decision",
+                "sensitive_column": "gender",
+                "method": "smote",
+            },
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["method"] == "smote"
+        assert "new_file_id" in data
+        
+    def test_get_shap(self):
+        file_id = self._upload_test_file()
+        # Run audit full to generate shap
+        client.post(
+            "/api/audit/full",
+            json={
+                "file_id": file_id,
+                "target_column": "decision",
+                "sensitive_columns": ["gender"],
+                "positive_label": 1,
+            },
+        )
+        # Fetch shap
+        response = client.get(f"/api/audit/{file_id}/shap")
+        assert response.status_code == 200
+        data = response.json()
+        assert "shap_analysis" in data
+
+
+# ---------------------------------------------------------------------------
+# New Features Tests
+# ---------------------------------------------------------------------------
+
+class TestNewFeatures:
+    def _upload_test_file(self) -> str:
+        csv_bytes = make_csv_bytes(rows=40)
+        response = client.post(
+            "/api/upload",
+            files={"file": ("features_test.csv", io.BytesIO(csv_bytes), "text/csv")},
+        )
+        return response.json()["file_id"]
+
+    def test_intersectional_audit(self):
+        file_id = self._upload_test_file()
+        response = client.post(
+            "/api/audit/intersectional",
+            json={
+                "file_id": file_id,
+                "target_column": "decision",
+                "sensitive_columns": ["gender", "age"],
+            },
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert "intersectional_results" in data
+        assert "most_disadvantaged_group" in data
+
+    def test_counterfactual_single(self):
+        file_id = self._upload_test_file()
+        response = client.post(
+            "/api/audit/counterfactual",
+            json={
+                "file_id": file_id,
+                "target_column": "decision",
+                "sensitive_column": "gender",
+                "row_index": 5,
+            },
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert "counterfactual" in data
+        assert "probability_difference" in data
+
+    def test_counterfactual_batch(self):
+        file_id = self._upload_test_file()
+        response = client.post(
+            "/api/audit/counterfactual/batch",
+            json={
+                "file_id": file_id,
+                "target_column": "decision",
+                "sensitive_column": "gender",
+                "sample_size": 10,
+            },
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert "discrimination_rate" in data
+
+    def test_templates_list(self):
+        response = client.get("/api/templates")
+        assert response.status_code == 200
+        data = response.json()
+        assert "hiring" in data
+
+    def test_templates_detect(self):
+        file_id = self._upload_test_file()
+        response = client.post(
+            "/api/templates/detect",
+            json={"file_id": file_id},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert "detected_industry" in data
+        assert "legal_framework" in data

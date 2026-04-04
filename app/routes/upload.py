@@ -117,3 +117,62 @@ async def get_file_columns(file_id: str) -> Dict[str, Any]:
         # Return first 3 rows as list of dicts (JSON-serializable)
         "preview": df.head(3).to_dict(orient="records"),
     }
+
+# ---------------------------------------------------------------------------
+# POST /api/upload/real
+# ---------------------------------------------------------------------------
+@router.post("/upload/real", summary="Upload dataset and auto-detect sensitive columns")
+async def upload_real_csv(file: UploadFile = File(...)) -> Dict[str, Any]:
+    """
+    Accept dataset, store it, and automatically analyze headers to recommend
+    target_column and sensitive_columns from known roots.
+    """
+    if not file.filename or not file.filename.lower().endswith(".csv"):
+        raise HTTPException(status_code=400, detail="Only CSV files accepted.")
+
+    try:
+        contents = await file.read()
+        df = pd.read_csv(io.BytesIO(contents))
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Could not parse CSV: {exc}")
+
+    validate_csv(df)
+
+    file_id = uuid.uuid4().hex[:8]
+    file_store[file_id] = df
+
+    sensitive_roots = ['gender', 'sex', 'race', 'eth', 'age', 'marital']
+    target_roots = ['hired', 'approved', 'status', 'outcome', 'default', 'fraud', 'churn']
+    
+    detected_sensitive = []
+    detected_target = None
+    col_types = {}
+    
+    for col in df.columns:
+        lower_col = col.lower()
+        if pd.api.types.is_numeric_dtype(df[col]):
+            col_types[col] = "numeric"
+        else:
+            col_types[col] = "categorical"
+            # Only categorical columns should be flagged as sensitive
+            if any(root in lower_col for root in sensitive_roots):
+                detected_sensitive.append(col)
+
+        if not detected_target and any(root in lower_col for root in target_roots):
+            detected_target = col
+            
+    if not detected_target and "decision" in df.columns:
+        detected_target = "decision"
+    elif not detected_target and len(df.columns) > 0:
+        detected_target = list(df.columns)[-1] 
+
+    return {
+        "file_id": file_id,
+        "filename": file.filename,
+        "rows": len(df),
+        "columns": list(df.columns),
+        "column_types": col_types,
+        "recommended_sensitive_columns": detected_sensitive,
+        "recommended_target_column": detected_target,
+        "message": "File uploaded and analyzed."
+    }
