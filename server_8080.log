@@ -25,3 +25,30 @@ INFO:     127.0.0.1:60523 - "GET /api/history/audits HTTP/1.1" 401 Unauthorized
 INFO:     127.0.0.1:60538 - "GET /api/history/audits HTTP/1.1" 401 Unauthorized
 INFO:     127.0.0.1:60538 - "GET /api/history/audits HTTP/1.1" 401 Unauthorized
 INFO:     127.0.0.1:60523 - "GET /api/history/audits HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:60805 - "GET /api/history/audits HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:60805 - "GET /api/history/audits HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:60805 - "GET /api/history/audits HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:60807 - "GET /api/history/audits HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:60807 - "GET /api/history/audits HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:60805 - "GET /api/history/audits HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:60805 - "GET /api/history/audits HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:60807 - "GET /api/history/audits HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:60807 - "GET /api/history/audits HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:60805 - "GET /api/history/audits HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:63760 - "OPTIONS /api/history/audits HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63762 - "OPTIONS /api/history/audits HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63760 - "GET /api/history/audits HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:63762 - "GET /api/history/audits HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:64768 - "OPTIONS /api/history/audits HTTP/1.1" 400 Bad Request
+INFO:     127.0.0.1:64925 - "OPTIONS /api/upload HTTP/1.1" 400 Bad Request
+INFO:     127.0.0.1:65034 - "OPTIONS /api/upload HTTP/1.1" 400 Bad Request
+INFO:     127.0.0.1:65143 - "OPTIONS /api/upload HTTP/1.1" 400 Bad Request
+INFO:     127.0.0.1:65206 - "OPTIONS /api/upload HTTP/1.1" 400 Bad Request
+INFO:     127.0.0.1:49301 - "OPTIONS /api/history/audits HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49302 - "OPTIONS /api/history/audits HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49301 - "GET /api/history/audits HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:49302 - "GET /api/history/audits HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:49404 - "GET /api/history/audits HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:49404 - "GET /api/history/audits HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:49462 - "GET /api/history/audits HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:49462 - "GET /api/history/audits HTTP/1.1" 401 Unauthorized
