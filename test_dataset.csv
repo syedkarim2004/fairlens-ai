@@ -1,0 +1,11 @@
+gender,race,age,education,experience,hired
+Male,White,25,Bachelors,2,1
+Female,Black,30,Masters,5,1
+Male,Asian,22,Bachelors,1,0
+Female,Hispanic,35,PhD,10,1
+Male,White,40,HighSchool,20,0
+Female,White,28,Bachelors,4,1
+Male,Black,32,Bachelors,7,0
+Female,Asian,26,Masters,3,1
+Male,Hispanic,29,Bachelors,5,0
+Female,Black,31,PhD,8,1

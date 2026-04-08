@@ -1,0 +1,10 @@
+🚀 Starting Final Hardening Verification...
+
+--- TEST: Tiny Dataset (3 rows) ---
+✅ SUCCESS: 3-row audit completed. Attributes: ['gender']
+
+--- TEST: No-Attribute Fallback (Empty sensitive_columns) ---
+✅ SUCCESS: Fallback triggered. Analyzed: ['gender', 'age']
+
+--- TEST: High-Cardinality Target ---
+✅ SUCCESS: High-cardinality target accepted. Attributes: ['sensitive']

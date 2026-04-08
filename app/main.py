@@ -10,7 +10,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from dotenv import load_dotenv
 
-from app.routes import upload, audit
+from app.routes import upload, audit, auth, report, history
+from routers import report as advanced_report
 
 # Load environment variables from .env file (if present).
 # Must be called before any service that reads env vars is imported.
@@ -31,11 +32,20 @@ app = FastAPI(
 )
 
 # ---------------------------------------------------------------------------
-# CORS Middleware — allow all origins for Cloud Run / frontend flexibility
+# CORS Middleware — robust dev access
 # ---------------------------------------------------------------------------
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "http://localhost:5173",
+        "http://localhost:5174",
+        "http://localhost:5175",
+        "http://localhost:5176",
+        "http://localhost:3000",
+        "http://localhost:4173",
+        "http://127.0.0.1:5173",
+        "http://127.0.0.1:5175",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -46,6 +56,10 @@ app.add_middleware(
 # ---------------------------------------------------------------------------
 app.include_router(upload.router, prefix="/api", tags=["Upload"])
 app.include_router(audit.router, prefix="/api", tags=["Audit"])
+app.include_router(auth.router, prefix="/api/auth", tags=["Auth"])
+app.include_router(report.router, prefix="/api/report", tags=["Report"])
+app.include_router(advanced_report.router, prefix="/api/report/v2", tags=["Advanced Report"])
+app.include_router(history.router, prefix="/api/history", tags=["History"])
 
 
 # ---------------------------------------------------------------------------

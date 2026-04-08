@@ -16,3 +16,7 @@ onnx
 skl2onnx
 scipy
 matplotlib
+requests
+PyJWT==2.8.0
+firebase-admin==6.5.0
+reportlab==4.2.0

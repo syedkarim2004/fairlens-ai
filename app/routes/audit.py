@@ -1,19 +1,14 @@
 """
-FairLens AI — Audit Routes
+FairLens AI — Deterministic Audit Routes
 ----------------------------
-Orchestrates fairness audits on uploaded datasets.
-Computes disparate impact, statistical parity, and calls Gemini for explanation.
-
-Endpoints:
-  POST /api/audit                     — run a full bias audit
-  POST /api/generate-test-data        — generate a synthetic biased hiring dataset
-  GET  /api/audit/{file_id}/report    — retrieve a previously run audit report
+Orchestrate fully reproducible fairness audits and mitigations.
+No randomness, no LLM variation, no sampling.
 """
 
 import logging
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 import pandas as pd
@@ -21,8 +16,10 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from app.routes.upload import file_store
-from app.services import fairness_engine, gemini_service, debiasing, industry_templates
-from app.utils.validator import validate_columns_exist
+import traceback
+from app.services import fairness_engine, debiasing, industry_templates, autonomous_config
+from app.utils.validator import validate_columns_exist, validate_audit_readiness, is_column_valid, normalize_dataset_deterministic
+from app.utils.reproducibility import setup_determinism
 
 logger = logging.getLogger(__name__)
 
@@ -30,487 +27,297 @@ router = APIRouter()
 
 # ---------------------------------------------------------------------------
 # Module-level Audit Store
-# Maps file_id (str) → last audit report dict for that file.
-# Populated after every successful POST /api/audit.
 # ---------------------------------------------------------------------------
 audit_store: Dict[str, Any] = {}
-
 
 # ---------------------------------------------------------------------------
 # Request / Response Schemas
 # ---------------------------------------------------------------------------
 
 class AuditRequest(BaseModel):
-    """Request body for POST /api/audit."""
-
-    file_id: str = Field(
-        ...,
-        description="The 8-character file ID returned by the /api/upload or generate-test-data endpoint.",
-        json_schema_extra={"example": "a1b2c3d4"},
-    )
-    target_column: str = Field(
-        ...,
-        description="Name of the binary outcome column to evaluate (e.g. 'hired').",
-        json_schema_extra={"example": "hired"},
-    )
-    sensitive_columns: List[str] = Field(
-        ...,
-        description="List of protected attribute columns to audit (e.g. ['gender', 'age']).",
-        json_schema_extra={"example": ["gender"]},
-    )
-    positive_label: int = Field(
-        default=1,
-        description="The value in target_column that represents a positive outcome.",
-        json_schema_extra={"example": 1},
-    )
-
-class DebiasRequest(BaseModel):
-    """Request body for POST /api/debias."""
-    file_id: str = Field(..., description="The dataset file_id")
-    target_column: str = Field(..., description="The target column")
-    sensitive_column: str = Field(..., description="The sensitive column to debias")
-    method: str = Field(default="smote", description="Debiasing method: smote, reweighting, or threshold")
-
-class IntersectionalRequest(BaseModel):
-    file_id: str = Field(...)
-    target_column: str = Field(...)
-    sensitive_columns: List[str] = Field(...)
-    positive_label: Any = Field(default=1)
-
-class CounterfactualRequest(BaseModel):
-    file_id: str = Field(...)
-    target_column: str = Field(...)
-    sensitive_column: str = Field(...)
-    row_index: int = Field(default=0)
-    positive_label: Any = Field(default=1)
-
-class CounterfactualBatchRequest(BaseModel):
-    file_id: str = Field(...)
-    target_column: str = Field(...)
-    sensitive_column: str = Field(...)
-    positive_label: Any = Field(default=1)
-    sample_size: int = Field(default=20)
+    file_id: str = Field(..., description="The unique file ID")
+    target_column: Optional[str] = None
+    sensitive_columns: Optional[List[str]] = None
+    positive_label: Any = None
 
 class TemplateDetectRequest(BaseModel):
     file_id: str = Field(...)
 
+class MitigationRequest(BaseModel):
+    file_id: str
+    method: str
+    target_column: str
+    sensitive_attribute: str
 
-
-# ---------------------------------------------------------------------------
-# POST /api/generate-test-data
-# ---------------------------------------------------------------------------
-
-@router.post("/generate-test-data", summary="Generate a synthetic biased hiring dataset")
-async def generate_test_data() -> Dict[str, Any]:
-    """
-    Generate a 500-row synthetic hiring dataset with intentional bias.
-    Target is 'decision' with values 'approved' or 'rejected'.
-    """
-    rng = np.random.default_rng(seed=42)
-
-    n = 500
-    genders = rng.choice(["male", "female"], size=n, p=[0.5, 0.5])
-    income = rng.integers(30000, 150000, size=n)
-    credit_score = rng.integers(300, 850, size=n)
-
-    # Inject gender bias: men 70% approval, women 30% approval
-    decision = np.array([
-        ("approved" if rng.random() < (0.70 if g == "male" else 0.30) else "rejected")
-        for g in genders
-    ])
-
-    df = pd.DataFrame({
-        "gender": genders.tolist(),
-        "income": income.tolist(),
-        "credit_score": credit_score.tolist(),
-        "decision": decision.tolist(),
-    })
-
-    file_id = uuid.uuid4().hex[:8]
-    file_store[file_id] = df
-
-    return {
-        "file_id": file_id,
-        "rows": len(df),
-        "columns": list(df.columns),
-        "target_column": "decision",
-        "message": f"Dataset generated with file_id '{file_id}'. Target: 'decision' (approved/rejected)."
-    }
-
+class MitigationResponse(BaseModel):
+    mitigation_applied: str
+    before: Dict[str, float]
+    after: Dict[str, float]
+    improvement: str
+    mitigated_file_id: str
 
 # ---------------------------------------------------------------------------
-# POST /api/audit
+# Primary Audit Endpoint (Zero-Click / Deterministic)
 # ---------------------------------------------------------------------------
 
-@router.post("/audit", summary="Run a fairness audit on an uploaded dataset")
-async def run_audit(request: AuditRequest) -> Dict[str, Any]:
+@router.post("/audit/run", summary="Run a fully deterministic autonomous audit")
+async def run_autonomous_audit(request: AuditRequest) -> Dict[str, Any]:
     """
-    Run a complete bias detection audit on a previously uploaded CSV dataset.
-
-    For each sensitive column the audit computes:
-    - Disparate Impact Ratio (80% rule)
-    - Statistical Parity Difference
-    - Risk level (HIGH / MEDIUM / LOW)
-    - Bias flag and plain-English interpretation
-
-    Additionally, a Gemini-powered explanation is generated and a concise
-    summary is returned. Results are saved to audit_store for later retrieval.
-
-    Args:
-        request: AuditRequest body with file_id, target_column, sensitive_columns,
-                 and optional positive_label.
-
-    Returns:
-        Comprehensive audit report including per-column metrics, Gemini explanation,
-        and a human-readable summary.
+    The main production endpoint for running fairness audits.
+    Guarantees 100% reproducibility. Same CSV -> Same JSON.
     """
-    # --- Retrieve DataFrame from in-memory store ---
-    if request.file_id not in file_store:
-        raise HTTPException(
-            status_code=404,
-            detail=(
-                f"File with id '{request.file_id}' not found. "
-                "Please upload the dataset first via POST /api/upload, "
-                "or generate one via POST /api/generate-test-data."
-            ),
+    setup_determinism(seed=42)
+
+    try:
+        file_id = request.file_id
+        if file_id not in file_store:
+            raise HTTPException(status_code=404, detail=f"File ID '{file_id}' not found.")
+
+        file_entry = file_store[file_id]
+        df_raw = file_entry["df"] if isinstance(file_entry, dict) else file_entry
+        
+        config = autonomous_config.analyze_dataset(df_raw)
+        
+        target_col = request.target_column or config["target_column"]
+        sensitive_cols = request.sensitive_columns or config["sensitive_attributes"]
+        pos_label = request.positive_label if request.positive_label is not None else config["positive_value"]
+
+        df = normalize_dataset_deterministic(df_raw, target_col)
+        
+        if df.empty:
+            raise HTTPException(status_code=400, detail="Dataset is empty after deterministic preprocessing.")
+
+        audit_output = fairness_engine.run_full_audit(df, target_col, sensitive_cols, pos_label)
+        
+        if audit_output.get("status") == "error":
+            raise HTTPException(status_code=400, detail=audit_output.get("message", "Audit engine failure."))
+
+        attributes_list = []
+        sorted_attr_names = sorted(audit_output["results"].keys())
+        
+        for attr in sorted_attr_names:
+            data = audit_output["results"][attr]
+            if data.get("status") == "success":
+                deep_insight = fairness_engine.get_gemma_deep_insights(
+                    attr, data["disparate_impact_ratio"], data["statistical_parity_difference"], data["risk_level"]
+                )
+                
+                attributes_list.append({
+                    "name": attr,
+                    "risk": data["risk_level"],
+                    "dir": data["disparate_impact_ratio"],
+                    "spd": data["statistical_parity_difference"],
+                    "baseline_group": data.get("baseline_group"),
+                    "minority_group": data.get("minority_group"),
+                    "baseline_rate": data.get("baseline_positive_rate"),
+                    "minority_rate": data.get("minority_positive_rate"),
+                    "sample_sizes": data.get("sample_sizes"),
+                    "deep_insight": deep_insight,
+                    "interpretation": fairness_engine.get_deterministic_interpretation(
+                        attr, data["disparate_impact_ratio"], data["risk_level"]
+                    )
+                })
+
+        score = audit_output.get("overall_score", 0)
+        overall_grade = audit_output.get("grade", "N/A")
+        
+        risk_level = "LOW"
+        if score < 60: risk_level = "HIGH"
+        elif score < 80: risk_level = "MEDIUM"
+
+        all_deep_insights = [a["deep_insight"] for a in attributes_list]
+        aggregated_summary = fairness_engine.generate_aggregated_summary(all_deep_insights)
+
+        final_response = {
+            "summary": {
+                "overall_risk": risk_level,
+                "overall_grade": overall_grade,
+                "score": int(score),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "deep_analysis": {
+                    "overview": aggregated_summary
+                }
+            },
+            "attributes": attributes_list,
+            "metrics": audit_output["results"], # Store raw metrics for mitigation lookup
+            "metadata": {
+                "file_id": file_id,
+                "target_column": target_col,
+                "positive_outcome": pos_label,
+                "rows": len(df),
+                "cols": len(df.columns)
+            }
+        }
+        
+        audit_store[file_id] = final_response
+        return final_response
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Audit failure: {e}\n{traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"Internal audit failure: {str(e)}")
+
+# ---------------------------------------------------------------------------
+# Mitigation Endpoint
+# ---------------------------------------------------------------------------
+
+@router.post("/audit/mitigate", response_model=MitigationResponse)
+async def apply_mitigation(request: MitigationRequest) -> MitigationResponse:
+    """
+    Apply real dataset transformations and re-calculate metrics for a specific sensitive attribute.
+    """
+    setup_determinism(seed=42)
+
+    try:
+        # 1. Verify File
+        file_entry = file_store.get(request.file_id)
+        if not file_entry:
+            raise HTTPException(status_code=404, detail="Dataset not found.")
+        
+        # 2. Get Baseline metrics
+        if request.file_id not in audit_store:
+             raise HTTPException(status_code=400, detail="Please run a standard audit first.")
+        
+        baseline = audit_store[request.file_id]
+        attr_metrics = baseline["metrics"].get(request.sensitive_attribute)
+        if not attr_metrics or attr_metrics.get("status") != "success":
+            raise HTTPException(status_code=400, detail=f"No valid baseline for attribute {request.sensitive_attribute}")
+        
+        before_stats = {
+            "DIR": attr_metrics["disparate_impact_ratio"],
+            "SPD": attr_metrics["statistical_parity_difference"]
+        }
+
+        # 3. Apply Mitigation Transformation
+        df_raw = file_entry["df"]
+        mitigated_df = debiasing.run_mitigation_pipeline(
+            df_raw, 
+            request.method, 
+            request.target_column, 
+            request.sensitive_attribute
         )
 
-    df = file_store[request.file_id]
-
-    # --- Validate that all referenced columns exist ---
-    # Enforce target_column to be 'decision'
-    target_column = "decision"
-    all_required_cols = [target_column] + request.sensitive_columns
-    validate_columns_exist(df, all_required_cols)
-
-    # --- Run the core fairness audit ---
-    logger.info(
-        "Starting audit — file_id=%s, target=%s, sensitive=%s",
-        request.file_id,
-        target_column,
-        request.sensitive_columns,
-    )
-
-    bias_results = fairness_engine.run_full_audit(
-        df=df,
-        target_col=target_column,
-        sensitive_cols=request.sensitive_columns,
-        positive_label="approved",
-    )
-
-    # --- Get Gemini AI explanation ---
-    gemini_explanation = gemini_service.get_bias_explanation(bias_results)
-
-    # --- Build human-readable summary ---
-    biased_cols = [col for col, m in bias_results.items() if m["is_biased"]]
-    high_risk_cols = [
-        col for col, m in bias_results.items() if m["risk_level"] == "HIGH"
-    ]
-
-    if not biased_cols:
-        summary = (
-            f"No significant bias detected across the {len(request.sensitive_columns)} "
-            f"sensitive attribute(s) audited. The dataset appears to be within the "
-            f"acceptable fairness threshold (Disparate Impact Ratio ≥ 0.8)."
+        # 4. Re-calculate Audit on Mitigated Data
+        # We run the full audit logic but focus on the delta for the requested attribute
+        new_audit = fairness_engine.run_full_audit(
+            mitigated_df, 
+            request.target_column, 
+            [request.sensitive_attribute],
+            baseline["metadata"]["positive_outcome"]
         )
-        status = "PASS"
-    else:
-        summary = (
-            f"Bias detected in {len(biased_cols)} out of {len(request.sensitive_columns)} "
-            f"sensitive attribute(s): {biased_cols}. "
-            + (
-                f"High-risk attributes requiring immediate attention: {high_risk_cols}. "
-                if high_risk_cols
-                else ""
-            )
-            + "Review the bias_results and Gemini explanation for detailed recommendations."
+
+        if new_audit["status"] != "success":
+            raise HTTPException(status_code=500, detail="Fairness engine failed on mitigated data.")
+            
+        attr_after = new_audit["results"].get(request.sensitive_attribute)
+        if not attr_after or attr_after.get("status") != "success":
+             raise HTTPException(status_code=500, detail="Could not calculate post-mitigation metrics.")
+
+        after_stats = {
+            "DIR": attr_after["disparate_impact_ratio"],
+            "SPD": attr_after["statistical_parity_difference"]
+        }
+
+        # 5. Calculate Improvement
+        # Delta toward 1.0 (DIR)
+        dir_before = before_stats["DIR"]
+        dir_after = after_stats["DIR"]
+        
+        # Professional Improvement Calculation
+        improvement_val = 0.0
+        if dir_before < 1.0:
+            improvement_val = max(0, (dir_after - dir_before) / (1.0 - dir_before)) * 100
+        elif dir_before > 1.0:
+            improvement_val = max(0, (dir_before - dir_after) / (dir_before - 1.0)) * 100
+            
+        # Store Mitigated Artifact
+        mitigated_file_id = f"mitigated_{uuid.uuid4().hex[:6]}"
+        file_store[mitigated_file_id] = {
+            "df": mitigated_df,
+            "filename": f"mitigated_{file_entry['filename']}"
+        }
+
+        return MitigationResponse(
+            mitigation_applied=request.method,
+            before=before_stats,
+            after=after_stats,
+            improvement=f"+{improvement_val:.1f}%",
+            mitigated_file_id=mitigated_file_id
         )
-        status = "FAIL"
 
-    logger.info(
-        "Audit complete — file_id=%s, status=%s, biased_cols=%s",
-        request.file_id,
-        status,
-        biased_cols,
-    )
-
-    report = {
-        "file_id": request.file_id,
-        "status": status,
-        "total_rows": len(df),
-        "target_column": request.target_column,
-        "sensitive_columns": request.sensitive_columns,
-        "positive_label": request.positive_label,
-        "bias_results": bias_results,
-        "gemini_explanation": gemini_explanation,
-        "summary": summary,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-    }
-
-    # --- Persist to audit_store for later retrieval ---
-    audit_store[request.file_id] = report
-
-    return report
-
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Mitigation failure: {e}\n{traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 # ---------------------------------------------------------------------------
-# GET /api/audit/{file_id}/report
+# Support Endpoints
 # ---------------------------------------------------------------------------
 
-@router.get("/audit/{file_id}/report", summary="Retrieve a previously run audit report")
+@router.post("/audit", summary="Alias for /audit/run")
+async def run_audit_alias(request: AuditRequest) -> Dict[str, Any]:
+    return await run_autonomous_audit(request)
+
+@router.post("/audit/full", summary="Alias for /audit/run (used by frontend)")
+async def run_audit_full_alias(request: AuditRequest) -> Dict[str, Any]:
+    return await run_autonomous_audit(request)
+
+@router.get("/audit/{file_id}/report", summary="Retrieve a cached report")
 async def get_audit_report(file_id: str) -> Dict[str, Any]:
-    """
-    Retrieve the most recent audit report for a given file_id.
-
-    Reports are stored in audit_store after every successful POST /api/audit call.
-    This endpoint allows you to fetch the results without re-running the audit.
-
-    Args:
-        file_id: The 8-character file ID used in the original audit request.
-
-    Returns:
-        Full audit report including bias_results, gemini_explanation, summary,
-        and the timestamp when the audit was run.
-    """
     if file_id not in audit_store:
-        raise HTTPException(
-            status_code=404,
-            detail=(
-                f"No audit report found for file_id '{file_id}'. "
-                "Please run POST /api/audit first to generate a report."
-            ),
-        )
-
+        raise HTTPException(status_code=404, detail=f"No report found for {file_id}.")
     return audit_store[file_id]
 
-# ---------------------------------------------------------------------------
-# POST /api/audit/full
-# ---------------------------------------------------------------------------
-
-@router.post("/audit/full", summary="Run a full fairness audit with all available analysis modules")
-async def run_full_audit_endpoint(request: AuditRequest) -> Dict[str, Any]:
-    if request.file_id not in file_store:
-        raise HTTPException(status_code=404, detail="File not found.")
-
-    target_column = "decision"
-    df = file_store[request.file_id]
-    validate_columns_exist(df, [target_column] + request.sensitive_columns)
-    
-    # Auto-detect industry context
-    industry_config = industry_templates.auto_configure_audit(df)
-    
-    # 1. Basic Audit
-    basic_results = fairness_engine.run_full_audit(df, target_column, request.sensitive_columns, "approved")
-    
-    # Calculate fairness grade
-    fairness_grade = fairness_engine.calculate_fairness_grade(basic_results)
-    
-    # Intersectional Analysis (if multiple sensitive columns)
-    intersectional_analysis = {}
-    if len(request.sensitive_columns) > 1:
-        intersectional_analysis = fairness_engine.run_intersectional_analysis(df, target_column, request.sensitive_columns, "approved")
-
-    # 2. AIF360
-    aif360_metrics = {}
-    for col in request.sensitive_columns:
-        aif360_metrics[col] = fairness_engine.run_aif360_audit(df, target_column, col, 1) # Internal numeric mapping
-        
-    # 3. SHAP
-    shap_analysis = fairness_engine.run_shap_analysis(df, target_column, request.sensitive_columns)
-    
-    # 4. Proxy Detection
-    proxy_columns = fairness_engine.detect_proxy_columns(df, request.sensitive_columns)
-    
-    # 5. Gemini Explanation (basic summary)
-    gemini_explanation = gemini_service.get_bias_explanation(
-        basic_results, 
-        fairness_grade=fairness_grade,
-        industry_context=industry_config.get("detected_industry", "general"),
-        legal_framework=industry_config.get("legal_framework", "")
-    )
-    
-    # Derive high-level status
-    biased_cols = [col for col, m in basic_results.items() if isinstance(m, dict) and m.get("is_biased")]
-    status = "FAIL" if biased_cols else "PASS"
-
-    report = {
-        "file_id": request.file_id,
-        "status": status,
-        "total_rows": len(df),
-        "target_column": request.target_column,
-        "sensitive_columns": request.sensitive_columns,
-        "fairness_grade": fairness_grade,
-        "industry_detected": industry_config.get("detected_industry", "general"),
-        "legal_framework": industry_config.get("legal_framework", ""),
-        "intersectional_analysis": intersectional_analysis,
-        "bias_results": basic_results,
-        "aif360_metrics": aif360_metrics,
-        "shap_analysis": shap_analysis,
-        "proxy_columns": proxy_columns,
-        "gemini_explanation": gemini_explanation,
-        "summary": f"Completed deep audit for {len(request.sensitive_columns)} attributes. Overall grade: {fairness_grade.get('grade')}.",
-        "timestamp": datetime.now(timezone.utc).isoformat()
-    }
-    
-    audit_store[request.file_id] = report
-    return report
-
-# ---------------------------------------------------------------------------
-# POST /api/debias
-# ---------------------------------------------------------------------------
-
-@router.post("/debias", summary="Debias dataset using SMOTE, reweighting, or threshold")
-async def apply_debiasing(request: DebiasRequest) -> Dict[str, Any]:
-    if request.file_id not in file_store:
-        raise HTTPException(status_code=404, detail="File not found.")
-        
-    df = file_store[request.file_id]
-    result = debiasing.run_debiasing_pipeline(df, request.target_column, request.sensitive_column, request.method)
-    
-    if "error" in result:
-        raise HTTPException(status_code=400, detail=result["error"])
-        
-    if "fixed_dataset" in result and request.method != "threshold":
-        fixed_df = pd.DataFrame(result["fixed_dataset"])
-        new_file_id = uuid.uuid4().hex[:8]
-        file_store[new_file_id] = fixed_df
-        result["new_file_id"] = new_file_id
-        
-        del result["fixed_dataset"]
-    elif request.method == "threshold":
-        del result["fixed_dataset"]
-        
-    return result
-
-# ---------------------------------------------------------------------------
-# GET /api/audit/{file_id}/shap
-# ---------------------------------------------------------------------------
-
-@router.get("/audit/{file_id}/shap", summary="Get cached SHAP values")
-async def get_shap_report(file_id: str) -> Dict[str, Any]:
-    if file_id not in audit_store or "shap_analysis" not in audit_store[file_id]:
-         raise HTTPException(status_code=404, detail="No SHAP report found for file.")
-    return {"shap_analysis": audit_store[file_id]["shap_analysis"]}
-
-
-# ---------------------------------------------------------------------------
-# New Feature Endpoints
-# ---------------------------------------------------------------------------
-
-@router.post("/audit/intersectional", summary="Run intersectional bias analysis")
-async def run_intersectional(request: IntersectionalRequest) -> Dict[str, Any]:
-    if request.file_id not in file_store:
-        raise HTTPException(status_code=404, detail="File not found.")
-        
-    df = file_store[request.file_id]
-    validate_columns_exist(df, [request.target_column] + request.sensitive_columns)
-    
-    if len(request.sensitive_columns) < 2:
-        raise HTTPException(status_code=400, detail="Must provide at least 2 sensitive columns")
-        
-    results = fairness_engine.run_intersectional_analysis(
-        df, request.target_column, request.sensitive_columns, request.positive_label
-    )
-    
-    most_disadvantaged = None
-    most_advantaged = None
-    
-    if results:
-        # Results are sorted by disparate impact ascending
-        groups = list(results.keys())
-        most_disadvantaged = groups[0]
-        most_advantaged = groups[-1]
-        
-        # Build prompt for explanation
-        prompt = f"Explain the intersectional bias finding: The most disadvantaged group is {most_disadvantaged} with Disparate Impact {results[most_disadvantaged]['disparate_impact']} and positive rate {results[most_disadvantaged]['positive_rate']}. The most advantaged group is {most_advantaged} with Disparate Impact {results[most_advantaged]['disparate_impact']} and positive rate {results[most_advantaged]['positive_rate']}."
-        try:
-            from groq import Groq
-            import os
-            client = Groq(api_key=os.getenv("GROQ_API_KEY", ""))
-            response = client.chat.completions.create(
-                model="llama-3.3-70b-versatile",
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=300
-            )
-            explanation = response.choices[0].message.content
-        except Exception:
-            explanation = "Explanation unavailable."
-    else:
-        explanation = "No valid intersectional groups found."
-        
-    return {
-        "file_id": request.file_id,
-        "intersectional_results": results,
-        "most_disadvantaged_group": most_disadvantaged,
-        "most_advantaged_group": most_advantaged,
-        "groq_explanation": explanation,
-        "timestamp": datetime.now(timezone.utc).isoformat()
-    }
-
-
-@router.post("/audit/counterfactual", summary="Run counterfactual analysis for a row")
-async def run_counterfactual_single(request: CounterfactualRequest) -> Dict[str, Any]:
-    if request.file_id not in file_store:
-        raise HTTPException(status_code=404, detail="File not found.")
-        
-    df = file_store[request.file_id]
-    validate_columns_exist(df, [request.target_column, request.sensitive_column])
-    
-    return fairness_engine.run_counterfactual(
-        df, request.target_column, request.sensitive_column, request.row_index, request.positive_label
-    )
-
-
-@router.post("/audit/counterfactual/batch", summary="Run counterfactual analysis for a sample of rows")
-async def run_counterfactual_batch(request: CounterfactualBatchRequest) -> Dict[str, Any]:
-    if request.file_id not in file_store:
-        raise HTTPException(status_code=404, detail="File not found.")
-        
-    df = file_store[request.file_id]
-    validate_columns_exist(df, [request.target_column, request.sensitive_column])
-    
-    sample_size = min(request.sample_size, len(df))
-    # Select random indices
-    rng = np.random.default_rng()
-    indices = rng.choice(len(df), size=sample_size, replace=False).tolist()
-    
-    affected_rows = []
-    total_diff = 0.0
-    
-    for idx in indices:
-        res = fairness_engine.run_counterfactual(
-            df, request.target_column, request.sensitive_column, idx, request.positive_label
-        )
-        if "error" not in res:
-            if res.get("outcome_changed", False):
-                affected_rows.append(idx)
-            total_diff += abs(res.get("probability_difference", 0.0))
-            
-    discrimination_rate = len(affected_rows) / sample_size if sample_size > 0 else 0
-    avg_diff = total_diff / sample_size if sample_size > 0 else 0
-    
-    interp = f"Out of {sample_size} random rows, changing the sensitive attribute altered the model's decision for {len(affected_rows)} people ({discrimination_rate*100:.1f}%). On average, the predicted probability changed by {avg_diff*100:.1f}%."
-    
-    return {
-        "discrimination_rate": discrimination_rate,
-        "affected_rows": affected_rows,
-        "average_probability_difference": avg_diff,
-        "interpretation": interp
-    }
-
-
-@router.get("/templates", summary="List available industry templates")
-async def list_templates() -> Dict[str, Any]:
-    return {
-        key: {"name": t["name"], "description": t["description"]} 
-        for key, t in industry_templates.TEMPLATES.items()
-    }
-
-
-@router.post("/templates/detect", summary="Auto-configure audit based on dataset")
+@router.post("/templates/detect", summary="Deterministic parameter detection")
 async def detect_template(request: TemplateDetectRequest) -> Dict[str, Any]:
-    if request.file_id not in file_store:
+    file_entry = file_store.get(request.file_id)
+    if not file_entry:
         raise HTTPException(status_code=404, detail="File not found.")
+    df = file_entry["df"] if isinstance(file_entry, dict) else file_entry
+    return autonomous_config.analyze_dataset(df)
+
+@router.post("/generate-test-data", summary="Deterministic synthetic data")
+async def generate_test_data() -> Dict[str, Any]:
+    """Deterministic version of test data generation."""
+    setup_determinism(seed=42)
+    rng = np.random.default_rng(seed=42)
+    n = 500
+    genders = rng.choice(["male", "female"], size=n)
+    decision = np.array([
+        ("approved" if rng.random() < (0.75 if g == "male" else 0.40) else "rejected")
+        for g in genders
+    ])
+    df = pd.DataFrame({"gender": genders, "decision": decision})
+    file_id = uuid.uuid4().hex[:8]
+    file_store[file_id] = {"df": df, "filename": "deterministic_test_mig.csv"}
+    return {"file_id": file_id, "message": "Deterministic test data generated."}
+
+@router.get("/audit/download/{file_id}", summary="Download mitigated dataset")
+async def download_mitigated(file_id: str):
+    """
+    Returns the mitigated dataframe as a downloadable CSV.
+    """
+    if file_id not in file_store:
+        raise HTTPException(status_code=404, detail="Mitigated file not found or expired.")
+    
+    entry = file_store[file_id]
+    df = entry["df"]
+    filename = entry["filename"]
+    
+    # Ensure .csv extension
+    if not filename.endswith('.csv'):
+        filename += '.csv'
         
-    df = file_store[request.file_id]
-    return industry_templates.auto_configure_audit(df)
+    from fastapi.responses import StreamingResponse
+    import io
+    
+    stream = io.StringIO()
+    df.to_csv(stream, index=False)
+    response = StreamingResponse(
+        iter([stream.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename={filename}"}
+    )
+    return response

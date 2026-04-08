@@ -65,14 +65,33 @@ async def upload_csv(file: UploadFile = File(...)) -> Dict[str, Any]:
 
     # --- Store in memory with a unique ID ---
     file_id = uuid.uuid4().hex[:8]
-    file_store[file_id] = df
+    
+    # --- Auto-Detection (Zero-Config) ---
+    try:
+        from app.services.auto_detect import auto_detect_columns
+        auto_config = auto_detect_columns(df)
+    except Exception as exc:
+        logger.error("Auto-detection failed: %s", exc)
+        auto_config = {
+            "target_column": df.columns[-1],
+            "positive_value": 1,
+            "sensitive_attributes": [],
+            "confidence_score": 0.1
+        }
+        
+    file_store[file_id] = {
+        "df": df,
+        "auto_config": auto_config,
+        "filename": file.filename
+    }
 
     logger.info(
-        "File uploaded — id=%s, name=%s, rows=%d, cols=%d",
+        "File uploaded — id=%s, name=%s, rows=%d, cols=%d, detected_target=%s",
         file_id,
         file.filename,
         len(df),
         len(df.columns),
+        auto_config.get("target_column")
     )
 
     return {
@@ -80,9 +99,10 @@ async def upload_csv(file: UploadFile = File(...)) -> Dict[str, Any]:
         "filename": file.filename,
         "rows": len(df),
         "columns": list(df.columns),
+        "auto_config": auto_config,
         "message": (
-            f"File '{file.filename}' uploaded successfully. "
-            f"Use file_id '{file_id}' to run an audit."
+            f"File '{file.filename}' uploaded and analyzed successfully. "
+            f"System detected target '{auto_config.get('target_column')}'."
         ),
     }
 
@@ -108,7 +128,11 @@ async def get_file_columns(file_id: str) -> Dict[str, Any]:
             detail=f"File with id '{file_id}' not found. Please upload the file first.",
         )
 
-    df = file_store[file_id]
+    file_entry = file_store[file_id]
+    if isinstance(file_entry, dict):
+        df = file_entry["df"]
+    else:
+        df = file_entry
 
     return {
         "file_id": file_id,
@@ -139,40 +163,32 @@ async def upload_real_csv(file: UploadFile = File(...)) -> Dict[str, Any]:
     validate_csv(df)
 
     file_id = uuid.uuid4().hex[:8]
-    file_store[file_id] = df
-
-    sensitive_roots = ['gender', 'sex', 'race', 'eth', 'age', 'marital']
-    target_roots = ['hired', 'approved', 'status', 'outcome', 'default', 'fraud', 'churn']
     
-    detected_sensitive = []
-    detected_target = None
-    col_types = {}
-    
-    for col in df.columns:
-        lower_col = col.lower()
-        if pd.api.types.is_numeric_dtype(df[col]):
-            col_types[col] = "numeric"
-        else:
-            col_types[col] = "categorical"
-            # Only categorical columns should be flagged as sensitive
-            if any(root in lower_col for root in sensitive_roots):
-                detected_sensitive.append(col)
+    # --- Use the new Auto-Detection Engine ---
+    try:
+        from app.services.auto_detect import auto_detect_columns
+        auto_config = auto_detect_columns(df)
+    except Exception as exc:
+        logger.error("Auto-detection in legacy endpoint failed: %s", exc)
+        auto_config = {
+            "target_column": df.columns[-1],
+            "positive_value": 1,
+            "sensitive_attributes": [],
+            "confidence_score": 0.1
+        }
 
-        if not detected_target and any(root in lower_col for root in target_roots):
-            detected_target = col
-            
-    if not detected_target and "decision" in df.columns:
-        detected_target = "decision"
-    elif not detected_target and len(df.columns) > 0:
-        detected_target = list(df.columns)[-1] 
+    file_store[file_id] = {
+        "df": df,
+        "auto_config": auto_config,
+        "filename": file.filename
+    }
 
     return {
         "file_id": file_id,
         "filename": file.filename,
-        "rows": len(df),
-        "columns": list(df.columns),
-        "column_types": col_types,
-        "recommended_sensitive_columns": detected_sensitive,
-        "recommended_target_column": detected_target,
-        "message": "File uploaded and analyzed."
+        "columns": df.columns.tolist(),
+        "auto_config": auto_config,
+        "recommended_sensitive_columns": auto_config.get("sensitive_attributes", []),
+        "recommended_target_column": auto_config.get("target_column"),
+        "message": "File uploaded and analyzed successfully using autonomous engine."
     }

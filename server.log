@@ -1,0 +1,49 @@
+INFO:     Started server process [65534]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+Groq key loaded: 56 chars
+INFO:     127.0.0.1:58108 - "POST /api/generate-test-data HTTP/1.1" 200 OK
+Ollama Gemma error: HTTPConnectionPool(host='localhost', port=11434): Read timed out. (read timeout=60)
+[gemini_service] get_bias_explanation called — key chars: 56
+Using Groq (Llama 3.3)...
+[gemini_service] Calling Groq API with model=llama-3.3-70b-versatile ...
+[gemini_service] Groq response received (1689 chars).
+Using Gemma (Ollama)...
+Fallback triggered: Ollama Gemma error: HTTPConnectionPool(host='localhost', port=11434): Read timed out. (read timeout=60)
+Gemma failed — falling back to Groq
+[gemini_service] get_bias_explanation called — key chars: 56
+Using Groq (Llama 3.3)...
+[gemini_service] Calling Groq API with model=llama-3.3-70b-versatile ...
+[gemini_service] Groq response received (1732 chars).
+INFO:     127.0.0.1:58110 - "POST /api/audit/run HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58217 - "POST /api/auth/demo HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58219 - "POST /api/generate-test-data HTTP/1.1" 200 OK
+Ollama Gemma error: HTTPConnectionPool(host='localhost', port=11434): Read timed out. (read timeout=60)
+[gemini_service] get_bias_explanation called — key chars: 56
+Using Groq (Llama 3.3)...
+[gemini_service] Calling Groq API with model=llama-3.3-70b-versatile ...
+[gemini_service] Groq response received (1700 chars).
+Using Gemma (Ollama)...
+Fallback triggered: Ollama Gemma error: HTTPConnectionPool(host='localhost', port=11434): Read timed out. (read timeout=60)
+Gemma failed — falling back to Groq
+[gemini_service] get_bias_explanation called — key chars: 56
+Using Groq (Llama 3.3)...
+[gemini_service] Calling Groq API with model=llama-3.3-70b-versatile ...
+[gemini_service] Groq response received (1776 chars).
+INFO:     127.0.0.1:58221 - "POST /api/audit HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58238 - "POST /api/report/v2/generate/9e1f6d23 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58479 - "POST /api/generate-test-data HTTP/1.1" 200 OK
+Ollama Gemma error: HTTPConnectionPool(host='localhost', port=11434): Read timed out. (read timeout=60)
+[gemini_service] get_bias_explanation called — key chars: 56
+Using Groq (Llama 3.3)...
+[gemini_service] Calling Groq API with model=llama-3.3-70b-versatile ...
+[gemini_service] Groq response received (1699 chars).
+Using Gemma (Ollama)...
+Fallback triggered: Ollama Gemma error: HTTPConnectionPool(host='localhost', port=11434): Read timed out. (read timeout=60)
+Gemma failed — falling back to Groq
+[gemini_service] get_bias_explanation called — key chars: 56
+Using Groq (Llama 3.3)...
+[gemini_service] Calling Groq API with model=llama-3.3-70b-versatile ...
+[gemini_service] Groq response received (1813 chars).
+INFO:     127.0.0.1:58481 - "POST /api/audit/run HTTP/1.1" 200 OK

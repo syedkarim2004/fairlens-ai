@@ -1,0 +1,217 @@
+INFO:     Started server process [74146]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8081 (Press CTRL+C to quit)
+INFO:     127.0.0.1:59080 - "POST /api/audit/generate-test-data HTTP/1.1" 404 Not Found
+[Reproducibility] Global seed set to 42
+INFO:     127.0.0.1:59090 - "POST /api/generate-test-data HTTP/1.1" 200 OK
+[Reproducibility] Global seed set to 42
+INFO:     127.0.0.1:59092 - "POST /api/audit/mitigate HTTP/1.1" 400 Bad Request
+[Reproducibility] Global seed set to 42
+INFO:     127.0.0.1:59094 - "POST /api/audit/mitigate HTTP/1.1" 400 Bad Request
+[Reproducibility] Global seed set to 42
+INFO:     127.0.0.1:59096 - "POST /api/audit/mitigate HTTP/1.1" 400 Bad Request
+[Reproducibility] Global seed set to 42
+INFO:     127.0.0.1:59098 - "POST /api/audit/mitigate HTTP/1.1" 400 Bad Request
+[Reproducibility] Global seed set to 42
+INFO:     127.0.0.1:59104 - "POST /api/generate-test-data HTTP/1.1" 200 OK
+[Reproducibility] Global seed set to 42
+INFO:     127.0.0.1:59106 - "POST /api/audit HTTP/1.1" 200 OK
+[Reproducibility] Global seed set to 42
+INFO:     127.0.0.1:59108 - "POST /api/audit/mitigate HTTP/1.1" 200 OK
+[Reproducibility] Global seed set to 42
+INFO:     127.0.0.1:59110 - "POST /api/audit/mitigate HTTP/1.1" 200 OK
+Mitigation failure: dtype 'str' does not support operation 'mean'
+Traceback (most recent call last):
+  File "/Users/abdulkarim/fairlens-backend/app/routes/audit.py", line 194, in apply_mitigation
+    mitigated_df = debiasing.run_mitigation_pipeline(
+        df_raw,
+    ...<2 lines>...
+        request.sensitive_attribute
+    )
+  File "/Users/abdulkarim/fairlens-backend/app/services/debiasing.py", line 139, in run_mitigation_pipeline
+    return apply_threshold_optimization(df, target_col, sensitive_col)
+  File "/Users/abdulkarim/fairlens-backend/app/services/debiasing.py", line 85, in apply_threshold_optimization
+    stats = temp_df.groupby(sensitive_col)[target_col].mean().sort_values()
+            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "/Users/abdulkarim/fairlens-backend/venv/lib/python3.14/site-packages/pandas/core/groupby/groupby.py", line 2285, in mean
+    result = self._cython_agg_general(
+        "mean",
+    ...<4 lines>...
+        skipna=skipna,
+    )
+  File "/Users/abdulkarim/fairlens-backend/venv/lib/python3.14/site-packages/pandas/core/groupby/groupby.py", line 1808, in _cython_agg_general
+    new_mgr = data.grouped_reduce(array_func)
+  File "/Users/abdulkarim/fairlens-backend/venv/lib/python3.14/site-packages/pandas/core/internals/managers.py", line 2274, in grouped_reduce
+    res = func(arr)
+  File "/Users/abdulkarim/fairlens-backend/venv/lib/python3.14/site-packages/pandas/core/groupby/groupby.py", line 1783, in array_func
+    result = self._grouper._cython_operation(
+        "aggregate",
+    ...<4 lines>...
+        **kwargs,
+    )
+  File "/Users/abdulkarim/fairlens-backend/venv/lib/python3.14/site-packages/pandas/core/groupby/ops.py", line 963, in _cython_operation
+    return cy_op.cython_operation(
+           ~~~~~~~~~~~~~~~~~~~~~~^
+        values=values,
+        ^^^^^^^^^^^^^^
+    ...<4 lines>...
+        **kwargs,
+        ^^^^^^^^^
+    )
+    ^
+  File "/Users/abdulkarim/fairlens-backend/venv/lib/python3.14/site-packages/pandas/core/groupby/ops.py", line 553, in cython_operation
+    return values._groupby_op(
+           ~~~~~~~~~~~~~~~~~~^
+        how=self.how,
+        ^^^^^^^^^^^^^
+    ...<4 lines>...
+        **kwargs,
+        ^^^^^^^^^
+    )
+    ^
+  File "/Users/abdulkarim/fairlens-backend/venv/lib/python3.14/site-packages/pandas/core/arrays/base.py", line 2807, in _groupby_op
+    raise TypeError(
+        f"dtype '{self.dtype}' does not support operation '{how}'"
+    )
+TypeError: dtype 'str' does not support operation 'mean'
+
+[Reproducibility] Global seed set to 42
+INFO:     127.0.0.1:59112 - "POST /api/audit/mitigate HTTP/1.1" 500 Internal Server Error
+[Reproducibility] Global seed set to 42
+INFO:     127.0.0.1:59114 - "POST /api/audit/mitigate HTTP/1.1" 200 OK
+[Reproducibility] Global seed set to 42
+INFO:     127.0.0.1:59118 - "POST /api/generate-test-data HTTP/1.1" 200 OK
+[Reproducibility] Global seed set to 42
+INFO:     127.0.0.1:59120 - "POST /api/audit HTTP/1.1" 200 OK
+[Reproducibility] Global seed set to 42
+INFO:     127.0.0.1:59122 - "POST /api/audit/mitigate HTTP/1.1" 200 OK
+[Reproducibility] Global seed set to 42
+INFO:     127.0.0.1:59124 - "POST /api/audit/mitigate HTTP/1.1" 200 OK
+Mitigation failure: dtype 'str' does not support operation 'mean'
+Traceback (most recent call last):
+  File "/Users/abdulkarim/fairlens-backend/app/routes/audit.py", line 194, in apply_mitigation
+    mitigated_df = debiasing.run_mitigation_pipeline(
+        df_raw,
+    ...<2 lines>...
+        request.sensitive_attribute
+    )
+  File "/Users/abdulkarim/fairlens-backend/app/services/debiasing.py", line 139, in run_mitigation_pipeline
+    return apply_threshold_optimization(df, target_col, sensitive_col)
+  File "/Users/abdulkarim/fairlens-backend/app/services/debiasing.py", line 85, in apply_threshold_optimization
+    stats = temp_df.groupby(sensitive_col)[target_col].mean().sort_values()
+            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "/Users/abdulkarim/fairlens-backend/venv/lib/python3.14/site-packages/pandas/core/groupby/groupby.py", line 2285, in mean
+    result = self._cython_agg_general(
+        "mean",
+    ...<4 lines>...
+        skipna=skipna,
+    )
+  File "/Users/abdulkarim/fairlens-backend/venv/lib/python3.14/site-packages/pandas/core/groupby/groupby.py", line 1808, in _cython_agg_general
+    new_mgr = data.grouped_reduce(array_func)
+  File "/Users/abdulkarim/fairlens-backend/venv/lib/python3.14/site-packages/pandas/core/internals/managers.py", line 2274, in grouped_reduce
+    res = func(arr)
+  File "/Users/abdulkarim/fairlens-backend/venv/lib/python3.14/site-packages/pandas/core/groupby/groupby.py", line 1783, in array_func
+    result = self._grouper._cython_operation(
+        "aggregate",
+    ...<4 lines>...
+        **kwargs,
+    )
+  File "/Users/abdulkarim/fairlens-backend/venv/lib/python3.14/site-packages/pandas/core/groupby/ops.py", line 963, in _cython_operation
+    return cy_op.cython_operation(
+           ~~~~~~~~~~~~~~~~~~~~~~^
+        values=values,
+        ^^^^^^^^^^^^^^
+    ...<4 lines>...
+        **kwargs,
+        ^^^^^^^^^
+    )
+    ^
+  File "/Users/abdulkarim/fairlens-backend/venv/lib/python3.14/site-packages/pandas/core/groupby/ops.py", line 553, in cython_operation
+    return values._groupby_op(
+           ~~~~~~~~~~~~~~~~~~^
+        how=self.how,
+        ^^^^^^^^^^^^^
+    ...<4 lines>...
+        **kwargs,
+        ^^^^^^^^^
+    )
+    ^
+  File "/Users/abdulkarim/fairlens-backend/venv/lib/python3.14/site-packages/pandas/core/arrays/base.py", line 2807, in _groupby_op
+    raise TypeError(
+        f"dtype '{self.dtype}' does not support operation '{how}'"
+    )
+TypeError: dtype 'str' does not support operation 'mean'
+
+[Reproducibility] Global seed set to 42
+INFO:     127.0.0.1:59126 - "POST /api/audit/mitigate HTTP/1.1" 500 Internal Server Error
+[Reproducibility] Global seed set to 42
+INFO:     127.0.0.1:59128 - "POST /api/audit/mitigate HTTP/1.1" 200 OK
+[Reproducibility] Global seed set to 42
+INFO:     127.0.0.1:59138 - "POST /api/generate-test-data HTTP/1.1" 200 OK
+[Reproducibility] Global seed set to 42
+INFO:     127.0.0.1:59140 - "POST /api/audit HTTP/1.1" 200 OK
+[Reproducibility] Global seed set to 42
+INFO:     127.0.0.1:59142 - "POST /api/audit/mitigate HTTP/1.1" 200 OK
+[Reproducibility] Global seed set to 42
+INFO:     127.0.0.1:59144 - "POST /api/audit/mitigate HTTP/1.1" 200 OK
+Mitigation failure: dtype 'str' does not support operation 'mean'
+Traceback (most recent call last):
+  File "/Users/abdulkarim/fairlens-backend/app/routes/audit.py", line 194, in apply_mitigation
+    mitigated_df = debiasing.run_mitigation_pipeline(
+        df_raw,
+    ...<2 lines>...
+        request.sensitive_attribute
+    )
+  File "/Users/abdulkarim/fairlens-backend/app/services/debiasing.py", line 139, in run_mitigation_pipeline
+    logger.info(f"Retraining logic (Balanced Resampling) applied. Dataset size: {len(df)} -> {len(balanced_df)}")
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/abdulkarim/fairlens-backend/app/services/debiasing.py", line 85, in apply_threshold_optimization
+    def is_pos(x):
+            ^^^^^^
+  File "/Users/abdulkarim/fairlens-backend/venv/lib/python3.14/site-packages/pandas/core/groupby/groupby.py", line 2285, in mean
+    result = self._cython_agg_general(
+        "mean",
+    ...<4 lines>...
+        skipna=skipna,
+    )
+  File "/Users/abdulkarim/fairlens-backend/venv/lib/python3.14/site-packages/pandas/core/groupby/groupby.py", line 1808, in _cython_agg_general
+    new_mgr = data.grouped_reduce(array_func)
+  File "/Users/abdulkarim/fairlens-backend/venv/lib/python3.14/site-packages/pandas/core/internals/managers.py", line 2274, in grouped_reduce
+    res = func(arr)
+  File "/Users/abdulkarim/fairlens-backend/venv/lib/python3.14/site-packages/pandas/core/groupby/groupby.py", line 1783, in array_func
+    result = self._grouper._cython_operation(
+        "aggregate",
+    ...<4 lines>...
+        **kwargs,
+    )
+  File "/Users/abdulkarim/fairlens-backend/venv/lib/python3.14/site-packages/pandas/core/groupby/ops.py", line 963, in _cython_operation
+    return cy_op.cython_operation(
+           ~~~~~~~~~~~~~~~~~~~~~~^
+        values=values,
+        ^^^^^^^^^^^^^^
+    ...<4 lines>...
+        **kwargs,
+        ^^^^^^^^^
+    )
+    ^
+  File "/Users/abdulkarim/fairlens-backend/venv/lib/python3.14/site-packages/pandas/core/groupby/ops.py", line 553, in cython_operation
+    return values._groupby_op(
+           ~~~~~~~~~~~~~~~~~~^
+        how=self.how,
+        ^^^^^^^^^^^^^
+    ...<4 lines>...
+        **kwargs,
+        ^^^^^^^^^
+    )
+    ^
+  File "/Users/abdulkarim/fairlens-backend/venv/lib/python3.14/site-packages/pandas/core/arrays/base.py", line 2807, in _groupby_op
+    raise TypeError(
+        f"dtype '{self.dtype}' does not support operation '{how}'"
+    )
+TypeError: dtype 'str' does not support operation 'mean'
+
+[Reproducibility] Global seed set to 42
+INFO:     127.0.0.1:59146 - "POST /api/audit/mitigate HTTP/1.1" 500 Internal Server Error
+[Reproducibility] Global seed set to 42
+INFO:     127.0.0.1:59148 - "POST /api/audit/mitigate HTTP/1.1" 200 OK

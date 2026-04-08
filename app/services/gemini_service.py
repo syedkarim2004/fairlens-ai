@@ -14,6 +14,8 @@ from typing import Any, Dict
 
 from dotenv import load_dotenv
 
+from app.services.gemma_service import get_gemma_analysis
+
 # ---------------------------------------------------------------------------
 # Load .env — must happen before we read any env vars.
 # load_dotenv() is idempotent; safe to call multiple times.
@@ -60,9 +62,12 @@ def get_bias_explanation(audit_results: Dict[str, Any], fairness_grade: Dict[str
     print(f"[gemini_service] get_bias_explanation called — key chars: {len(api_key)}")
 
     if not api_key or api_key == "your_groq_api_key_here":
-        print("[gemini_service] GROQ_API_KEY is empty or placeholder — skipping Groq call.")
+        print("[gemini_service] GROQ_API_KEY is empty — Fallback triggered")
         logger.warning("GROQ_API_KEY is not set. Returning fallback explanation.")
         return "Explanation unavailable."
+    
+    print("Using Groq (Llama 3.3)...")
+    logger.info("Using Groq for fast analysis")
 
     try:
         from groq import Groq
@@ -96,6 +101,77 @@ def get_bias_explanation(audit_results: Dict[str, Any], fairness_grade: Dict[str
 
 
 # ---------------------------------------------------------------------------
+# Gemma Integration (Secondary Engine)
+# ---------------------------------------------------------------------------
+
+def get_gemma4_analysis(audit_results: Dict[str, Any]) -> str:
+    """
+    Uses Gemma via Ollama for deeper bias analysis.
+    Falls back to Groq if Ollama fails.
+    """
+    prompt = _build_gemma4_prompt(audit_results)
+    gemma_response = get_gemma_analysis(prompt)
+
+    if gemma_response:
+        return gemma_response
+
+    print("Gemma failed — falling back to Groq")
+    return get_bias_explanation(audit_results)
+
+
+def get_dual_analysis(audit_results: Dict[str, Any]) -> Dict[str, str]:
+    """
+    Runs BOTH Groq and Gemma and returns both explanations.
+    """
+    groq_result = get_bias_explanation(audit_results)
+    gemma_result = get_gemma4_analysis(audit_results)
+
+    return {
+        "groq_explanation": groq_result,
+        "gemma4_explanation": gemma_result,
+        "primary": "groq",
+        "secondary": "gemma"
+    }
+
+
+def get_best_available_explanation(audit_results: Dict[str, Any]) -> Dict[str, str]:
+    """
+    Attempts to get the best possible explanation.
+    Order: Gemma -> Groq -> Rule-based
+    """
+    try:
+        gemma = get_gemma4_analysis(audit_results)
+        if gemma and "Unavailable" not in gemma and len(gemma) > 50:
+            return {"engine": "gemma", "text": gemma}
+    except Exception as e:
+        logger.error("Gemma final attempt failed: %s", e)
+
+    try:
+        groq = get_bias_explanation(audit_results)
+        if groq and "unavailable" not in groq.lower() and len(groq) > 50:
+            return {"engine": "groq", "text": groq}
+    except Exception as e:
+        logger.error("Groq final attempt failed: %s", e)
+
+    # Final Rule-based fallback
+    biased_cols = [col for col, m in audit_results.items() if isinstance(m, dict) and m.get("is_biased")]
+    if biased_cols:
+        text = f"The system has detected potential bias in the following attributes: {', '.join(biased_cols)}. " \
+               f"Disparate impact ratios for these groups are below the 0.8 threshold, indicating that certain groups " \
+               f"are receiving positive outcomes at a significantly lower rate than others. We recommend reviewing " \
+               f"the data collection process and considering resampling or reweighting techniques to mitigate this imbalance."
+    else:
+        text = "The fairness audit found no major bias issues. All analyzed attributes fall within acceptable ranges " \
+               "for statistical parity and disparate impact (DIR ≥ 0.8). The model appears to be treating demographic " \
+               "groups equitably based on the provided dataset."
+               
+    return {
+        "engine": "rule_based",
+        "text": text
+    }
+
+
+# ---------------------------------------------------------------------------
 # Internal Helpers
 # ---------------------------------------------------------------------------
 
@@ -103,9 +179,16 @@ def _build_prompt(audit_results: Dict[str, Any], fairness_grade: Dict[str, Any] 
     """
     Build a structured prompt from audit results for the Groq API.
     """
+    # Extract per-attribute results if we received the full audit wrapper
+    per_attr = audit_results
+    if isinstance(audit_results, dict) and "results" in audit_results:
+        per_attr = audit_results["results"]
+
     columns_summary = []
-    for col, metrics in audit_results.items():
-        if isinstance(metrics, dict) and 'status' in metrics and metrics['status'] == 'error':
+    for col, metrics in per_attr.items():
+        if not isinstance(metrics, dict):
+            continue
+        if 'status' in metrics and metrics['status'] == 'error':
             continue
             
         columns_summary.append(
@@ -131,22 +214,50 @@ Grade: {fairness_grade.get('grade', 'N/A')}
 Description: {fairness_grade.get('grade_description', 'N/A')}
 """
 
-    prompt = f"""You are a fairness and responsible AI expert. Analyze the following algorithmic bias audit results and provide a clear, actionable, plain-English explanation suitable for a non-technical business audience.
+    prompt = f"""You are a senior algorithmic fairness auditor. Provide a PRODUCTION-GRADE, STRICTLY DATA-DRIVEN analysis of the audit results below.
 
-INDUSTRY CONTEXT: {industry_context.upper()}
-LEGAL FRAMEWORK: {legal_framework}
+AUDIT CONTEXT:
+Industry: {industry_context.upper()}
+Legal Framework: {legal_framework}
+
 {grade_text}
-AUDIT RESULTS:
+
+AUDIT DATA (REAL METRICS):
 {columns_text}
 
-Your response should:
-1. Briefly explain what Disparate Impact Ratio and Statistical Parity Difference mean in plain English (1–2 sentences each).
-2. For each attribute, describe whether bias was detected, how severe it is, and what it means in practice context of the {industry_context} industry.
-3. Provide 2–3 concrete, actionable recommendations to reduce the detected bias, ensuring they adhere to the {legal_framework}.
-4. Refer to the Overall Fairness Grade in your summary.
-5. Use a professional but approachable tone — avoid jargon where possible.
-6. Keep the total response under 400 words.
+STRICT ANALYSIS REQUIREMENTS:
+1. NO GENERIC FILLER: Do not use phrases like "critical need for improvement" unless backed by specific numbers.
+2. CITATION: You MUST cite the exact Disparate Impact Ratio (DIR) and Statistical Parity Difference (SPD) for every attribute.
+3. IDENTIFY DISADVANTAGE: Explicitly state which minority group is being disadvantaged compared to the baseline.
+4. LOGICAL REASONING: Explain exactly what the DIR means for each attribute (e.g., "The 'race' attribute shows a DIR of 0.58, indicating the minority group receives positive outcomes at 58% the rate of the baseline group").
+5. TONE: Professional, objective, and data-centric.
+6. LENGTH: Under 400 words.
 
-Provide the explanation below:"""
+Your data-driven report:"""
 
     return prompt
+
+def _build_gemma4_prompt(audit_results: dict) -> str:
+    return f"""
+You are an expert AI fairness auditor.
+
+Analyze the following bias audit results deeply and technically.
+
+Your tasks:
+1. Identify the ROOT CAUSE of bias (data imbalance, proxy variables, sampling bias, etc.)
+2. Suggest SPECIFIC technical fixes:
+   - resampling strategies (oversampling/undersampling)
+   - feature selection or removal
+   - fairness-aware ML techniques
+3. Estimate LEGAL RISK LEVEL (LOW / MEDIUM / HIGH) with justification
+4. Provide a STEP-BY-STEP remediation plan
+5. Compare bias severity to industry standards (e.g., disparate impact thresholds)
+
+Constraints:
+- Be precise and technical
+- Avoid generic explanations
+- Maximum 600 words
+
+Audit Results:
+{audit_results}
+"""

@@ -1,0 +1,17 @@
+INFO:     Started server process [71393]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8081 (Press CTRL+C to quit)
+[Reproducibility] Global seed set to 42
+INFO:     127.0.0.1:59037 - "POST /api/generate-test-data HTTP/1.1" 200 OK
+[Reproducibility] Global seed set to 42
+INFO:     127.0.0.1:59039 - "POST /api/audit/run HTTP/1.1" 200 OK
+[Reproducibility] Global seed set to 42
+INFO:     127.0.0.1:59041 - "POST /api/audit/mitigate HTTP/1.1" 200 OK
+[Reproducibility] Global seed set to 42
+INFO:     127.0.0.1:59048 - "POST /api/generate-test-data HTTP/1.1" 200 OK
+[Reproducibility] Global seed set to 42
+INFO:     127.0.0.1:59050 - "POST /api/audit/run HTTP/1.1" 200 OK
+[Reproducibility] Global seed set to 42
+INFO:     127.0.0.1:59052 - "POST /api/audit/mitigate HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59073 - "POST /api/audit/generate-test-data HTTP/1.1" 404 Not Found

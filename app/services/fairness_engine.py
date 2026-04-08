@@ -122,7 +122,33 @@ def calculate_fairness_grade(audit_results: Dict[str, Any]) -> Dict[str, Any]:
         "per_attribute": per_attribute,
         "recommendation": " ".join(recommendation)
     }
-# ---------------------------------------------------------------------------
+def _binarize_target(df: pd.DataFrame, col: str, pos_label: Any = 1) -> pd.Series:
+    """
+    Standardizes a target column into 1 (positive) and 0 (negative).
+    Handles:
+    - String literals (approved/yes/true)
+    - Boolean values
+    - Continuous numeric values (medians split if not binary)
+    """
+    series = df[col]
+    
+    # 1. Check if numeric continuous (more than 2 unique values)
+    if pd.api.types.is_numeric_dtype(series) and series.nunique() > 2:
+        median = series.median()
+        logger.info(f"Numeric target '{col}' identified. Applying median-split binarization (median: {median}).")
+        return (series >= median).astype(int)
+    
+    # 2. Standard string/binary mapping
+    pos_val = str(pos_label).lower().strip()
+    
+    def is_positive(x):
+        if pd.isna(x): return 0
+        s = str(x).lower().strip()
+        if s == pos_val: return 1
+        if s in ["1", "1.0", "true", "yes", "approved", "hired", "accepted", "selected", "passed"]: return 1
+        return 0
+        
+    return series.apply(is_positive)
 
 def calculate_disparate_impact(
     df: pd.DataFrame,
@@ -131,66 +157,103 @@ def calculate_disparate_impact(
     positive_label: Any = 1,
 ) -> Dict[str, Any]:
     """
-    Calculate the Disparate Impact Ratio (DIR) using the new formula:
-    DIR = (lowest group approval rate) / (highest group approval rate)
-
-    Args:
-        df: Dataset as a pandas DataFrame.
-        target_col: Name of the outcome/target column.
-        sensitive_col: Name of the sensitive/protected attribute column.
-        positive_label: The label value considered "positive" (e.g. 1 or "approved").
-
-    Returns:
-        A dict with group rates, disparate impact ratio, and identification of min/max groups.
+    Calculate the Disparate Impact Ratio (DIR) and group rates.
     """
-    temp_df = df.copy()
+    try:
+        # 0. Harden Column Matching (Case Insensitivity)
+        actual_cols = {c.lower(): c for c in df.columns}
+        if target_col.lower() in actual_cols:
+            target_col = actual_cols[target_col.lower()]
+        if sensitive_col.lower() in actual_cols:
+            sensitive_col = actual_cols[sensitive_col.lower()]
 
-    # 1. Map target_col if it's string-based (e.g., "approved"/"rejected" -> 1/0)
-    if temp_df[target_col].dtype == 'object' or isinstance(positive_label, str):
-        # Convert everything to string for comparison to avoid type errors
-        pos_str = str(positive_label).lower()
-        temp_df[target_col] = temp_df[target_col].astype(str).str.lower().apply(
-            lambda x: 1 if x == pos_str or x == "approved" else 0
-        )
-        logger.info(f"[Fairness] Mapped target column '{target_col}' to binary 1/0.")
+        temp_df = df.copy()
 
-    # 2. Group by the sensitive attribute and calculate approval rates
-    group_stats = temp_df.groupby(sensitive_col)[target_col].agg(['mean', 'count'])
-    
-    if len(group_stats) < 2:
-        logger.warning(f"[Fairness] Insufficient data for '{sensitive_col}'. Only one group found.")
+        # 1. Map target_col to binary (0/1) using unified helper
+        temp_df['target_binary'] = _binarize_target(temp_df, target_col, positive_label)
+        target_col = 'target_binary'
+
+        # 2. Group by the sensitive attribute
+        # Drop NAs in sensitive_col for grouping
+        valid_df = temp_df.dropna(subset=[sensitive_col])
+        
+        if valid_df.empty:
+            return {
+                "status": "error",
+                "message": f"No valid data for sensitive attribute '{sensitive_col}' after removing nulls.",
+                "disparate_impact_ratio": 1.0,
+                "group_rates": {}
+            }
+
+        # Check for weights (from Reweighing mitigation)
+        weights_col = 'weights' if 'weights' in valid_df.columns else None
+        if weights_col:
+            logger.info(f"📊 Applying weighted analysis for '{sensitive_col}' using column '{weights_col}'")
+        
+        if weights_col:
+            # Weighted mean = sum(values * weights) / sum(weights)
+            def weighted_mean(group):
+                return (group[target_col] * group[weights_col]).sum() / group[weights_col].sum()
+            
+            group_stats = valid_df.groupby(sensitive_col).apply(weighted_mean).rename('mean')
+            group_counts = valid_df.groupby(sensitive_col).size().rename('count')
+            group_stats = pd.concat([group_stats, group_counts], axis=1)
+        else:
+            group_stats = valid_df.groupby(sensitive_col)[target_col].agg(['mean', 'count'])
+        
+        if len(group_stats) < 2:
+            return {
+                "status": "insufficient_data",
+                "message": f"Only one unique group found in '{sensitive_col}': {list(group_stats.index)}",
+                "disparate_impact_ratio": 1.0,
+                "group_rates": {str(k): float(v) for k, v in group_stats['mean'].to_dict().items()}
+            }
+
+        # 3. Deterministic Baseline Selection (Highest Count)
+        baseline_group = str(valid_df[sensitive_col].value_counts().index[0])
+        
+        if weights_col:
+            rates = group_stats['mean']
+        else:
+            rates = valid_df.groupby(sensitive_col)[target_col].mean()
+            
+        counts = valid_df[sensitive_col].value_counts()
+        
+        baseline_rate = float(rates[baseline_group])
+        
+        # Minority group is the one with lowest rate (for DIR min/max logic)
+        minority_group = str(rates.idxmin())
+        minority_rate = float(rates.min())
+        
+        # DIR = minority / baseline
+        # Fixed Rule: If baseline_rate is 0, DIR is 0 (as instructed)
+        dir_ratio = (minority_rate / baseline_rate) if baseline_rate > 0 else 0.0
+        
+        # SPD = baseline - minority
+        spd_value = baseline_rate - minority_rate
+        
+        # JSON Safety
+        if np.isnan(dir_ratio) or np.isinf(dir_ratio):
+            dir_ratio = 0.0
+
         return {
-            "status": "insufficient data",
-            "disparate_impact_ratio": 1.0,
-            "groups": group_stats['mean'].to_dict()
+            "status": "success",
+            "baseline_group": baseline_group,
+            "minority_group": minority_group,
+            "baseline_rate": round(baseline_rate, 4),
+            "minority_rate": round(minority_rate, 4),
+            "disparate_impact_ratio": round(float(dir_ratio), 4),
+            "group_rates": {str(k): round(float(v), 4) for k, v in rates.items()},
+            "sample_sizes": {str(k): int(v) for k, v in counts.items()}
         }
-
-    # 3. Compute Disparate Impact: min_rate / max_rate
-    rates = group_stats['mean']
-    
-    # Print debug logs for each group
-    for group, rate in rates.items():
-        logger.info(f"Group '{group}' approval rate: {rate*100:.2f}% (n={group_stats.loc[group, 'count']})")
-        print(f"DEBUG: Group '{group}' approval rate: {rate*100:.2f}%")
-
-    min_rate = float(rates.min())
-    max_rate = float(rates.max())
-    
-    # Avoid division by zero
-    dir_ratio = round(min_rate / max_rate, 4) if max_rate > 0 else 1.0
-    
-    logger.info(f"[Fairness] Final DI Calculation: {min_rate:.4f} / {max_rate:.4f} = {dir_ratio:.4f}")
-    print(f"DEBUG: Final DI Calculation: {min_rate:.4f} / {max_rate:.4f} = {dir_ratio:.4f}")
-
-    return {
-        "baseline_group": str(rates.idxmax()),
-        "minority_group": str(rates.idxmin()),
-        "baseline_rate": round(max_rate, 4),
-        "minority_rate": round(min_rate, 4),
-        "disparate_impact_ratio": dir_ratio,
-        "group_rates": {str(k): round(float(v), 4) for k, v in rates.items()},
-        "status": "success"
-    }
+    except Exception as e:
+        logger.error(f"Error in calculate_disparate_impact for {sensitive_col}: {e}")
+        return {
+            "status": "error",
+            "message": str(e),
+            "disparate_impact_ratio": 1.0,
+            "group_rates": {}
+        }
 
 
 def calculate_statistical_parity(
@@ -220,19 +283,47 @@ def calculate_statistical_parity(
     baseline_group = value_counts.index[0]
     minority_group = value_counts.index[-1]
 
-    baseline_df = df[df[sensitive_col] == baseline_group]
-    minority_df = df[df[sensitive_col] == minority_group]
+    # 0. Harden Column Matching (Case Insensitivity)
+    actual_cols = {c.lower(): c for c in df.columns}
+    if target_col.lower() in actual_cols:
+        target_col = actual_cols[target_col.lower()]
+    if sensitive_col.lower() in actual_cols:
+        sensitive_col = actual_cols[sensitive_col.lower()]
 
-    baseline_rate = (
-        (baseline_df[target_col] == positive_label).sum() / len(baseline_df)
-        if len(baseline_df) > 0
-        else 0.0
-    )
-    minority_rate = (
-        (minority_df[target_col] == positive_label).sum() / len(minority_df)
-        if len(minority_df) > 0
-        else 0.0
-    )
+    # 1. Ensure target column is binary (1/0) using standardized logic
+    target_series = _binarize_target(df, target_col, positive_label)
+
+    baseline_df_target = target_series[df[sensitive_col] == baseline_group]
+    minority_df_target = target_series[df[sensitive_col] == minority_group]
+
+    # Support for Weights (Reweighing mitigation)
+    weights_col = 'weights' if 'weights' in df.columns else None
+
+    if weights_col:
+        baseline_weights = df[df[sensitive_col] == baseline_group][weights_col]
+        minority_weights = df[df[sensitive_col] == minority_group][weights_col]
+        
+        baseline_rate = (
+            (baseline_df_target * baseline_weights).sum() / baseline_weights.sum()
+            if baseline_weights.sum() > 0
+            else 0.0
+        )
+        minority_rate = (
+            (minority_df_target * minority_weights).sum() / minority_weights.sum()
+            if minority_weights.sum() > 0
+            else 0.0
+        )
+    else:
+        baseline_rate = (
+            baseline_df_target.sum() / len(baseline_df_target)
+            if len(baseline_df_target) > 0
+            else 0.0
+        )
+        minority_rate = (
+            minority_df_target.sum() / len(minority_df_target)
+            if len(minority_df_target) > 0
+            else 0.0
+        )
 
     return round(minority_rate - baseline_rate, 4)
 
@@ -295,11 +386,16 @@ def run_intersectional_analysis(
     
     group_stats = temp_df.groupby('intersectional_group')[target_col].agg(['mean', 'count'])
     
-    # Filter small groups
-    valid_groups = group_stats[group_stats['count'] >= 10]
+    # Filter small groups dynamically based on dataset size
+    # For small datasets, we allow smaller groups (min 2)
+    min_group_size = 2 if len(temp_df) < 50 else 5
+    valid_groups = group_stats[group_stats['count'] >= min_group_size]
     
     if valid_groups.empty:
-        return {}
+        # Emergency: just pick the largest group if everything is filtered
+        valid_groups = group_stats.nlargest(1, 'count')
+        if valid_groups.empty:
+            return {}
         
     results = {}
     for group, row in valid_groups.iterrows():
@@ -485,47 +581,83 @@ def run_aif360_audit(
             "error": str(e)
         }
 
-def run_shap_analysis(df: pd.DataFrame, target_col: str, sensitive_cols: List[str]) -> Dict[str, float]:
+def calculate_shap_importance(df: pd.DataFrame, target_col: str, sensitive_cols: List[str], positive_label: Any = 1) -> List[Dict[str, Any]]:
     """
-    Run SHAP analysis using a RandomForestClassifier to find top 5 features driving the outcome.
+    Train a lightweight Random Forest and use SHAP to attribute bias.
+    Requirement: 
+    - Flag sensitive_cols with is_sensitive: true
+    - Handle < 50 rows gracefully (return uniform)
+    - Return detailed list with contribution_pct
     """
     try:
         from sklearn.ensemble import RandomForestClassifier
         from sklearn.preprocessing import LabelEncoder
         import shap
         
+        if len(df) < 50:
+            # Handle small datasets gracefully with uniform importance
+            cols = [c for c in df.columns if c != target_col]
+            val = round(1.0 / len(cols), 4) if cols else 0
+            return [{"feature": c, "shap_value": val, "is_sensitive": c in sensitive_cols, "contribution_pct": round(val * 100, 2)} for c in cols]
+
         temp_df = df.copy()
         
+        # 1. Prepare target
+        if temp_df[target_col].dtype == 'object' or isinstance(positive_label, str):
+            pos_str = str(positive_label).lower()
+            temp_df[target_col] = temp_df[target_col].astype(str).str.lower().apply(
+                lambda x: 1 if x == pos_str or x == "approved" else 0
+            )
+
+        # 2. Encode features
         for col in temp_df.columns:
-            if temp_df[col].dtype == 'object':
-                temp_df[col] = LabelEncoder().fit_transform(temp_df[col].astype(str))
-                
+            if col != target_col:
+                if temp_df[col].dtype == 'object' or not pd.api.types.is_numeric_dtype(temp_df[col]):
+                    temp_df[col] = LabelEncoder().fit_transform(temp_df[col].astype(str))
+                else:
+                    temp_df[col] = temp_df[col].fillna(0)
+
         X = temp_df.drop(columns=[target_col])
         y = temp_df[target_col]
         
-        clf = RandomForestClassifier(n_estimators=50, random_state=42)
+        # 3. Train RF
+        clf = RandomForestClassifier(n_estimators=100, max_depth=5, random_state=42)
         clf.fit(X, y)
         
+        # 4. SHAP Explanation
         explainer = shap.TreeExplainer(clf)
+        # Use a background sample if dataset is large, but here we can use X
         shap_values = explainer.shap_values(X)
         
-        # Handle binary vs multiclass output from TreeExplainer
+        # Handle different SHAP output formats (binary vs multi-class array)
         if isinstance(shap_values, list):
-            shap_values_to_aggregate = shap_values[1]
-        elif len(shap_values.shape) == 3: # Shap > = 0.40 format 
-             shap_values_to_aggregate = shap_values[:,:,1]
+            # Binary class 1
+            vals = np.abs(shap_values[1]).mean(axis=0)
+        elif len(shap_values.shape) == 3:
+            vals = np.abs(shap_values[:, :, 1]).mean(axis=0)
         else:
-            shap_values_to_aggregate = shap_values
+            vals = np.abs(shap_values).mean(axis=0)
+
+        # 5. Build results
+        total_importance = np.sum(vals) if np.sum(vals) > 0 else 1.0
+        results = []
+        for i, col in enumerate(X.columns):
+            score = float(vals[i])
+            results.append({
+                "feature": col,
+                "shap_value": round(score, 6),
+                "is_sensitive": col in sensitive_cols,
+                "contribution_pct": round((score / total_importance) * 100, 2)
+            })
             
-        mean_abs_shap = np.abs(shap_values_to_aggregate).mean(axis=0)
-        
-        feature_scores = {feat: float(score) for feat, score in zip(X.columns, mean_abs_shap)}
-        sorted_features = dict(sorted(feature_scores.items(), key=lambda item: item[1], reverse=True)[:5])
-        
-        return sorted_features
+        # Sort by importance
+        results.sort(key=lambda x: x["shap_value"], reverse=True)
+        return results[:10] # Return top 10
+
     except Exception as e:
-        logger.error(f"SHAP analysis failed: {e}")
-        return {"error": str(e)}
+        logger.error(f"SHAP attribution failed: {e}")
+        return []
+
 
 def detect_proxy_columns(df: pd.DataFrame, sensitive_cols: List[str]) -> Dict[str, Dict[str, float]]:
     """
@@ -569,6 +701,17 @@ def detect_proxy_columns(df: pd.DataFrame, sensitive_cols: List[str]) -> Dict[st
 # Full Audit Orchestration
 # ---------------------------------------------------------------------------
 
+def _safe_float(val, fallback=0.0):
+    """Return val as float, replacing NaN/Inf with fallback."""
+    try:
+        f = float(val)
+        if np.isnan(f) or np.isinf(f):
+            return fallback
+        return f
+    except (TypeError, ValueError):
+        return fallback
+
+
 def run_full_audit(
     df: pd.DataFrame,
     target_col: str,
@@ -576,96 +719,181 @@ def run_full_audit(
     positive_label: Any = 1,
 ) -> Dict[str, Any]:
     """
-    Run a fairness audit.
-    Updated to focus on accurate DI calculation for valid categorical attributes.
+    Run a comprehensive fairness audit across all sensitive columns.
+    Hardened to ensure it never crashes due to a single bad column.
     """
-    results: Dict[str, Any] = {}
+    if df is None or df.empty:
+         return {"error": "Empty dataframe provided", "status": "error", "results": {}}
 
-    # Enforce: only use the first sensitive column provided if several exist
-    if not sensitive_cols:
-        return {}
-    
-    # We only process the primary sensitive attribute as per new requirements
-    primary_col = sensitive_cols[0]
+    # 1. Harden Target Column selection (Case Insensitivity)
+    actual_cols = {c.lower(): c for c in df.columns}
+    if target_col.lower() in actual_cols:
+        target_col = actual_cols[target_col.lower()]
 
-    # Check if the column is numeric (ignore if so)
-    if pd.api.types.is_numeric_dtype(df[primary_col]):
-        logger.warning(f"[Fairness] Ignoring numeric sensitive column: {primary_col}")
-        return {
-            primary_col: {
-                "status": "error",
-                "message": f"Column '{primary_col}' is numeric. Disparate impact is only valid for categorical attributes."
+    per_attr_results: Dict[str, Any] = {}
+    biased_count = 0
+    total_attrs = len(sensitive_cols)
+
+    for col in sensitive_cols:
+        try:
+            # 2. Harden Sensitive Column selection
+            actual_col = col
+            if col.lower() in actual_cols:
+                actual_col = actual_cols[col.lower()]
+            else:
+                logger.warning(f"Column '{col}' not in DF — skipping.")
+                per_attr_results[col] = {"status": "error", "message": f"Column '{col}' not found."}
+                continue
+
+            # Core Metric Calculation
+            dir_res = calculate_disparate_impact(df, target_col, actual_col, positive_label)
+            
+            if dir_res.get("status") == "error":
+                per_attr_results[col] = {"status": "error", "message": dir_res.get("message")}
+                continue
+
+            if dir_res.get("status") == "insufficient_data":
+                 per_attr_results[col] = {
+                    "status": "insufficient_data",
+                    "message": dir_res.get("message"),
+                    "disparate_impact_ratio": 1.0,
+                    "risk_level": "LOW",
+                    "is_biased": False
+                 }
+                 continue
+
+            dir_ratio = _safe_float(dir_res["disparate_impact_ratio"])
+            baseline_rate = _safe_float(dir_res["baseline_rate"])
+            minority_rate = _safe_float(dir_res["minority_rate"])
+
+            # Use robust SPD calculation
+            spd = calculate_statistical_parity(df, target_col, actual_col, positive_label)
+
+            risk = get_risk_level(dir_ratio)
+            is_biased = dir_ratio < 0.8
+            if is_biased: biased_count += 1
+
+            per_attr_results[col] = {
+                "status": "success",
+                "attribute": actual_col,
+                "disparate_impact_ratio": round(float(dir_ratio), 4),
+                "statistical_parity_difference": round(float(spd), 4),
+                "risk_level": risk,
+                "is_biased": bool(is_biased),
+                "baseline_group": dir_res["baseline_group"],
+                "minority_group": dir_res["minority_group"],
+                "baseline_positive_rate": round(float(baseline_rate), 4),
+                "minority_positive_rate": round(float(minority_rate), 4),
+                "sample_sizes": dir_res["sample_sizes"]
             }
-        }
 
-    # --- Core metrics ---
-    dir_results = calculate_disparate_impact(df, target_col, primary_col, positive_label)
+        except Exception as e:
+            logger.error(f"Failed to audit attribute '{col}': {e}")
+            per_attr_results[col] = {"status": "error", "message": f"Processing failed: {str(e)}"}
+
+    # Calculate Overall Score (Average DIR of success attributes)
+    valid_dirs = [res["disparate_impact_ratio"] for res in per_attr_results.values() if res.get("status") == "success"]
+    overall_score = np.mean(valid_dirs) if valid_dirs else 1.0
     
-    if dir_results.get("status") == "insufficient data":
-        results[primary_col] = {
-            "status": "insufficient data",
-            "message": "Only one group detected in the sensitive attribute. Metrics cannot be computed.",
-            "is_biased": False,
-            "risk_level": "LOW",
-            "disparate_impact_ratio": 1.0
-        }
-    else:
-        dir_ratio = dir_results["disparate_impact_ratio"]
-        spd = calculate_statistical_parity(df, target_col, primary_col, positive_label)
-        
-        # Threshold: DI < 0.8 is biased (FAIL)
-        is_biased = dir_ratio < 0.8
-        risk = "HIGH" if is_biased else "LOW"
+    # Calculate Grade
+    grade_data = calculate_fairness_grade(per_attr_results)
+    overall_fairness_grade = grade_data.get("grade", "N/A")
+    
+    # Summary sentence
+    summary = (
+        f"Audited {total_attrs} sensitive attribute(s). "
+        f"{biased_count} found biased (DIR < 0.8). "
+        f"Overall grade: {overall_fairness_grade}."
+    )
 
-        results[primary_col] = {
-            "baseline_group": dir_results["baseline_group"],
-            "minority_group": dir_results["minority_group"],
-            "baseline_positive_rate": dir_results["baseline_rate"],
-            "minority_positive_rate": dir_results["minority_rate"],
-            "disparate_impact_ratio": dir_ratio,
-            "statistical_parity_difference": float(spd),
-            "risk_level": risk,
-            "is_biased": bool(is_biased),
-            "interpretation": f"Disparate Impact is {dir_ratio:.3f}. Threshold for FAIR is 0.800.",
-        }
+    return {
+        "status": "success",
+        "results": per_attr_results,
+        "overall_score": round(float(overall_score), 4),
+        "overall_fairness_grade": overall_fairness_grade, # New Alias
+        "grade": overall_fairness_grade,
+        "grade_details": grade_data,
+        "total_attributes": total_attrs,
+        "total_sensitive_attrs": total_attrs, # New Alias
+        "biased_attributes": biased_count,
+        "biased_attrs": biased_count, # New Alias
+        "summary": summary,
+        "timestamp": pd.Timestamp.now().isoformat()
+    }
 
-    return results
 
 
 # ---------------------------------------------------------------------------
 # Internal Helpers
 # ---------------------------------------------------------------------------
 
-def _build_interpretation(
+def get_deterministic_interpretation(
     col: str,
-    baseline_group: str,
-    minority_group: str,
-    baseline_rate: float,
-    minority_rate: float,
     dir_ratio: float,
-    spd: float,
-    risk: str,
-    is_biased: bool,
+    risk: str
 ) -> str:
-    """Build a plain-English explanation of the fairness metrics for one column."""
-    pct_baseline = round(baseline_rate * 100, 1)
-    pct_minority = round(minority_rate * 100, 1)
-    pct_gap = round(abs(spd) * 100, 1)
+    """Build a fixed, non-random explanation based on metrics."""
+    if risk == "LOW":
+        return f"'{col}' shows minimal bias with a Disparate Impact Ratio of {dir_ratio:.2f}, which is above the 0.8 threshold."
+    elif risk == "MEDIUM":
+        return f"'{col}' shows moderate bias (DIR: {dir_ratio:.2f}). Consider monitoring outcomes for this group."
+    else:
+        return f"'{col}' shows high bias because DIR is below 0.8 (Value: {dir_ratio:.2f}). Remediation required."
 
-    direction = "lower" if spd < 0 else "higher"
+def get_gemma_deep_insights(
+    attribute: str,
+    dir_val: float,
+    spd_val: float,
+    risk_label: str
+) -> Dict[str, Any]:
+    """
+    Generate deterministic, metrics-driven 'Deep Insights' (Gemma replacement).
+    Reflects priority rules: Severe (DIR < 0.5) > High (DIR < 0.8) > Medium > Low.
+    """
+    # 1. Determine Insight & Severity
+    if dir_val < 0.5:
+        insight = "Severe bias detected. The disadvantaged group receives significantly fewer positive outcomes."
+        severity = "HIGH"
+        status = "SEVERE"
+    elif dir_val < 0.8:
+        insight = "Significant bias detected. One group is clearly disadvantaged."
+        severity = "HIGH"
+        status = "HIGH"
+    elif risk_label == "MEDIUM":
+        insight = "Moderate bias detected. Some disparity exists between groups."
+        severity = "MEDIUM"
+        status = "MEDIUM"
+    else:
+        insight = "Minimal bias detected. Outcomes are nearly equal across groups."
+        severity = "LOW"
+        status = "LOW"
 
-    bias_verdict = (
-        f"This indicates POTENTIAL BIAS (risk level: {risk})."
-        if is_biased
-        else f"This is within the acceptable fairness threshold (risk level: {risk})."
-    )
+    # 2. Determine Reason based on SPD
+    if spd_val > 0.2:
+        reason = f"DIR is {dir_val:.2f} and SPD is {spd_val:.2f}, indicating large disparity."
+    elif spd_val < 0.05:
+        reason = f"DIR is {dir_val:.2f} and SPD is {spd_val:.2f}, indicating minimal disparity."
+    else:
+        reason = f"DIR is {dir_val:.2f} and SPD is {spd_val:.2f}, indicating moderate performance gaps."
 
-    return (
-        f"For the '{col}' attribute: the baseline group ('{baseline_group}') has a "
-        f"positive outcome rate of {pct_baseline}%, while the minority group "
-        f"('{minority_group}') has a rate of {pct_minority}%. "
-        f"The minority group's rate is {pct_gap}% {direction} than the baseline group's. "
-        f"The Disparate Impact Ratio is {dir_ratio:.4f} (ideal ≥ 0.8) and the "
-        f"Statistical Parity Difference is {spd:.4f} (ideal = 0). "
-        f"{bias_verdict}"
-    )
+    return {
+        "attribute": attribute,
+        "insight": insight,
+        "reason": reason,
+        "severity": severity,
+        "status": status
+    }
+
+def generate_aggregated_summary(insights: List[Dict[str, Any]]) -> str:
+    """Generate final high-level summary from a list of structured insights."""
+    if not insights:
+        return "No attributes were analyzed. Audit inconclusive."
+        
+    high_count = sum(1 for i in insights if i["severity"] == "HIGH")
+    
+    if high_count >= 2:
+        return "The system shows high bias across multiple attributes. Immediate intervention is required."
+    elif high_count == 1:
+        return "Significant bias detected in a primary attribute. Review of the decision logic is recommended."
+    else:
+        return "The system appears fair with minimal bias across the analyzed traits."
