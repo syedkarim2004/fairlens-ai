@@ -7,10 +7,10 @@ set -e # Exit on error
 # 1. Build the Frontend
 # ---------------------------------------------------------------------------
 echo "🚀 Building FairLens Frontend (Vite)..."
-cd ../fairlens-frontend
+cd frontend
 npm install && npm install --save-dev firebase-tools
 npm run build
-cd ../fairlens-backend
+cd ..
 
 # ---------------------------------------------------------------------------
 # 3. Deploy to Firebase Hosting (Unified Domain)
@@ -18,9 +18,9 @@ cd ../fairlens-backend
 echo "☁️ Deploying to Firebase Hosting..."
 
 # We use the Firebase CLI to deploy to the unified domain [fairlens-2026]
-cd ../fairlens-frontend
+cd frontend
 npx firebase deploy --only hosting --project fairlens-2026 --non-interactive
-cd ../fairlens-backend
+cd ..
 
 echo "✅ Unified deployment complete!"
 echo "🔗 App is live at: https://fairlens-2026.web.app"

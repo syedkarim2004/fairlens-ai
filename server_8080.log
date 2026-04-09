@@ -52,3 +52,13 @@ INFO:     127.0.0.1:49404 - "GET /api/history/audits HTTP/1.1" 401 Unauthorized
 INFO:     127.0.0.1:49404 - "GET /api/history/audits HTTP/1.1" 401 Unauthorized
 INFO:     127.0.0.1:49462 - "GET /api/history/audits HTTP/1.1" 401 Unauthorized
 INFO:     127.0.0.1:49462 - "GET /api/history/audits HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:50629 - "OPTIONS /api/upload HTTP/1.1" 200 OK
+Failed to parse CSV file 'business-operations-survey-2023-business-operations.csv': 'utf-8' codec can't decode byte 0x96 in position 107: invalid start byte
+INFO:     127.0.0.1:50629 - "POST /api/upload HTTP/1.1" 400 Bad Request
+INFO:     127.0.0.1:50649 - "POST /api/upload HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50649 - "OPTIONS /api/templates/detect HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50649 - "POST /api/templates/detect HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50651 - "OPTIONS /api/audit/full HTTP/1.1" 200 OK
+Error in calculate_disparate_impact for age: '18'
+[Reproducibility] Global seed set to 42
+INFO:     127.0.0.1:50651 - "POST /api/audit/full HTTP/1.1" 200 OK
