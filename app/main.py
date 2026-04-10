@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from dotenv import load_dotenv
 
-from app.routes import upload, audit, auth, report, history
+from app.routes import upload, audit, auth, report, history, external_sources, preview, visualize, dashboard
 from routers import report as advanced_report
 
 # Load environment variables from .env file (if present).
@@ -61,8 +61,12 @@ app.include_router(upload.router, prefix="/api", tags=["Upload"])
 app.include_router(audit.router, prefix="/api", tags=["Audit"])
 app.include_router(auth.router, prefix="/api/auth", tags=["Auth"])
 app.include_router(report.router, prefix="/api/report", tags=["Report"])
+app.include_router(dashboard.router, prefix="/api", tags=["Dashboard"])
 app.include_router(advanced_report.router, prefix="/api/report/v2", tags=["Advanced Report"])
 app.include_router(history.router, prefix="/api/history", tags=["History"])
+app.include_router(external_sources.router, prefix="/api", tags=["External Sources"])
+app.include_router(preview.router, prefix="/api", tags=["Preview"])
+app.include_router(visualize.router, prefix="/api", tags=["Visualize"])
 
 
 # ---------------------------------------------------------------------------

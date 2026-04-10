@@ -17,6 +17,18 @@ import json
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Domain-Specific Thresholds
+# ---------------------------------------------------------------------------
+DOMAIN_THRESHOLDS = {
+    "hiring": {"dir_threshold": 0.80, "spd_flag": 0.15, "label": "EEOC 80% Rule"},
+    "credit": {"dir_threshold": 0.80, "spd_flag": 0.10, "label": "ECOA / Fair Lending"},
+    "insurance": {"dir_threshold": 0.85, "spd_flag": 0.10, "label": "Insurance Fairness (strict)"},
+    "education": {"dir_threshold": 0.75, "spd_flag": 0.15, "label": "Educational Equity"},
+    "healthcare": {"dir_threshold": 0.90, "spd_flag": 0.05, "label": "Health Equity (very strict)"},
+    "general": {"dir_threshold": 0.80, "spd_flag": 0.15, "label": "General Fairness"},
+}
+
 
 # ---------------------------------------------------------------------------
 # Individual Metric Functions
@@ -328,24 +340,29 @@ def calculate_statistical_parity(
     return round(minority_rate - baseline_rate, 4)
 
 
-def get_risk_level(disparate_impact_ratio: float) -> str:
+def get_risk_level(disparate_impact_ratio: float, domain: str = None) -> str:
     """
     Classify the bias risk level based on the Disparate Impact Ratio.
 
-    Uses the 80% (four-fifths) rule applied symmetrically in both directions:
-      - Extreme bias (either direction): DIR < 0.6 or DIR > 1/0.6 ≈ 1.67  → HIGH
-      - Moderate bias:                  DIR 0.6–0.8 or DIR 1.25–1.67      → MEDIUM
-      - Acceptable:                     DIR 0.8–1.25                       → LOW
+    Uses domain-specific thresholds when a domain is provided,
+    otherwise falls back to the standard 80% (four-fifths) rule.
 
     Args:
         disparate_impact_ratio: The calculated DIR value.
+        domain: Optional domain for domain-specific thresholds.
 
     Returns:
         One of "HIGH", "MEDIUM", or "LOW".
     """
-    if disparate_impact_ratio < 0.6 or disparate_impact_ratio > (1 / 0.6):
+    threshold = 0.8
+    if domain and domain in DOMAIN_THRESHOLDS:
+        threshold = DOMAIN_THRESHOLDS[domain]["dir_threshold"]
+
+    moderate_threshold = threshold - 0.2  # e.g. 0.6 for default
+
+    if disparate_impact_ratio < moderate_threshold or disparate_impact_ratio > (1 / moderate_threshold):
         return "HIGH"
-    elif disparate_impact_ratio < 0.8 or disparate_impact_ratio > (1 / 0.8):
+    elif disparate_impact_ratio < threshold or disparate_impact_ratio > (1 / threshold):
         return "MEDIUM"
     else:
         return "LOW"
@@ -717,6 +734,7 @@ def run_full_audit(
     target_col: str,
     sensitive_cols: List[str],
     positive_label: Any = 1,
+    domain: str = None,
 ) -> Dict[str, Any]:
     """
     Run a comprehensive fairness audit across all sensitive columns.
@@ -769,8 +787,9 @@ def run_full_audit(
             # Use robust SPD calculation
             spd = calculate_statistical_parity(df, target_col, actual_col, positive_label)
 
-            risk = get_risk_level(dir_ratio)
-            is_biased = dir_ratio < 0.8
+            risk = get_risk_level(dir_ratio, domain=domain)
+            dir_threshold = DOMAIN_THRESHOLDS.get(domain, DOMAIN_THRESHOLDS["general"])["dir_threshold"] if domain else 0.8
+            is_biased = dir_ratio < dir_threshold
             if is_biased: biased_count += 1
 
             per_attr_results[col] = {

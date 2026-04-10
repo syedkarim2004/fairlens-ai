@@ -30,38 +30,21 @@ file_store: Dict[str, pd.DataFrame] = {}
 # ---------------------------------------------------------------------------
 # POST /api/upload
 # ---------------------------------------------------------------------------
-@router.post("/upload", summary="Upload a CSV dataset")
-async def upload_csv(file: UploadFile = File(...)) -> Dict[str, Any]:
+@router.post("/upload", summary="Upload a dataset (CSV, Excel, JSON, Parquet, TSV)")
+async def upload_file(file: UploadFile = File(...)) -> Dict[str, Any]:
     """
-    Accept a CSV file upload, validate it, store it in memory, and return metadata.
+    Accept a dataset upload in multiple formats, validate it, store it in memory,
+    and return metadata.
 
-    Validations:
-    - File must have a `.csv` extension.
-    - File must contain at least 10 data rows.
+    Supported formats: .csv, .xlsx, .xls, .json, .parquet, .tsv
 
     Returns:
         file_id, filename, row count, column list, and a success message.
     """
-    # --- Validate file extension ---
-    if not file.filename or not file.filename.lower().endswith(".csv"):
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid file type. Only CSV files (.csv) are accepted.",
-        )
+    from app.services.data_loader import load_from_upload
 
-    # --- Read file content ---
-    try:
-        contents = await file.read()
-        df = pd.read_csv(io.BytesIO(contents))
-    except Exception as exc:
-        logger.error("Failed to parse CSV file '%s': %s", file.filename, exc)
-        raise HTTPException(
-            status_code=400,
-            detail=f"Could not parse the CSV file. Ensure it is valid: {str(exc)}",
-        )
-
-    # --- Validate content (rows, emptiness) ---
-    validate_csv(df)
+    # --- Load file using unified data loader (validates format + min rows) ---
+    df, filename = await load_from_upload(file)
 
     # --- Store in memory with a unique ID ---
     file_id = uuid.uuid4().hex[:8]

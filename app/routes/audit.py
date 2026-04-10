@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field
 from app.routes.upload import file_store
 import traceback
 from app.services import fairness_engine, debiasing, industry_templates, autonomous_config
+from app.state.audit_history import save_audit_record
 from app.utils.validator import validate_columns_exist, validate_audit_readiness, is_column_valid, normalize_dataset_deterministic
 from app.utils.reproducibility import setup_determinism
 
@@ -39,6 +40,7 @@ class AuditRequest(BaseModel):
     target_column: Optional[str] = None
     sensitive_columns: Optional[List[str]] = None
     positive_label: Any = None
+    domain: Optional[str] = Field(None, description="Domain: hiring, credit, insurance, education, healthcare, general")
 
 class TemplateDetectRequest(BaseModel):
     file_id: str = Field(...)
@@ -87,7 +89,7 @@ async def run_autonomous_audit(request: AuditRequest) -> Dict[str, Any]:
         if df.empty:
             raise HTTPException(status_code=400, detail="Dataset is empty after deterministic preprocessing.")
 
-        audit_output = fairness_engine.run_full_audit(df, target_col, sensitive_cols, pos_label)
+        audit_output = fairness_engine.run_full_audit(df, target_col, sensitive_cols, pos_label, domain=request.domain)
         
         if audit_output.get("status") == "error":
             raise HTTPException(status_code=400, detail=audit_output.get("message", "Audit engine failure."))
@@ -150,6 +152,13 @@ async def run_autonomous_audit(request: AuditRequest) -> Dict[str, Any]:
         }
         
         audit_store[file_id] = final_response
+        
+        save_audit_record(
+            file_id=file_id,
+            filename=file_entry.get("filename", "dataset.csv"),
+            audit_result=final_response,
+            domain=request.domain
+        )
         return final_response
 
     except HTTPException:
